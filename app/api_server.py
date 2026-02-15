@@ -95,6 +95,7 @@ def _requests(raw_list: List[Dict[str, Any]], date_key: str) -> List[SessionRequ
                 group_key=raw.get("group_key"),
                 label=raw.get("label"),
                 provider_id=raw.get("provider_id"),
+                provider_ids=tuple(raw.get("provider_ids", [])) if raw.get("provider_ids") else None,
                 room_id=raw.get("room_id"),
             )
         )

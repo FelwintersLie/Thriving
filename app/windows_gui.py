@@ -487,6 +487,8 @@ class SchedulerDesktopApp:
 
         self.auto_req_id_var = self.tk.StringVar(value="req_1")
         self.auto_provider_var = self.tk.StringVar(value="Any provider")
+        self.auto_provider_b_var = self.tk.StringVar(value="(none)")
+        self.auto_provider_c_var = self.tk.StringVar(value="(none)")
         self.auto_room_var = self.tk.StringVar(value="Any compatible room")
         self.auto_discipline_var = self.tk.StringVar(value=DISCIPLINES[1])
         self.auto_mode_var = self.tk.StringVar(value="individual")
@@ -495,6 +497,7 @@ class SchedulerDesktopApp:
         self.auto_duration_var = self.tk.StringVar(value="60")
         self.auto_weekday_a_var = self.tk.StringVar(value="Monday")
         self.auto_weekday_b_var = self.tk.StringVar(value="Wednesday")
+        self.auto_weekday_c_var = self.tk.StringVar(value="(none)")
         self.auto_week_1_var = self.tk.BooleanVar(value=True)
         self.auto_week_2_var = self.tk.BooleanVar(value=True)
         self.auto_week_3_var = self.tk.BooleanVar(value=True)
@@ -505,6 +508,7 @@ class SchedulerDesktopApp:
         self.auto_priority_var = self.tk.StringVar(value="100")
 
         provider_values = ["Any provider"] + self.provider_catalog
+        provider_optional_values = ["(none)"] + self.provider_catalog
         room_values = ["Any compatible room"] + PREDEFINED_ROOMS
 
         ttk.Label(cond, text="Requirement ID").grid(row=0, column=0, sticky="w")
@@ -513,19 +517,27 @@ class SchedulerDesktopApp:
         ttk.Label(cond, text="Discipline").grid(row=0, column=1, sticky="w")
         ttk.Combobox(cond, textvariable=self.auto_discipline_var, values=DISCIPLINES, state="readonly", width=20).grid(row=1, column=1, padx=2)
 
-        ttk.Label(cond, text="Provider").grid(row=0, column=2, sticky="w")
-        self.auto_provider_combo = ttk.Combobox(cond, textvariable=self.auto_provider_var, values=provider_values, state="readonly", width=20)
+        ttk.Label(cond, text="Provider A").grid(row=0, column=2, sticky="w")
+        self.auto_provider_combo = ttk.Combobox(cond, textvariable=self.auto_provider_var, values=provider_values, state="readonly", width=18)
         self.auto_provider_combo.grid(row=1, column=2, padx=2)
 
-        ttk.Label(cond, text="Room").grid(row=0, column=3, sticky="w")
+        ttk.Label(cond, text="Provider B").grid(row=0, column=3, sticky="w")
+        self.auto_provider_b_combo = ttk.Combobox(cond, textvariable=self.auto_provider_b_var, values=provider_optional_values, state="readonly", width=18)
+        self.auto_provider_b_combo.grid(row=1, column=3, padx=2)
+
+        ttk.Label(cond, text="Provider C").grid(row=0, column=4, sticky="w")
+        self.auto_provider_c_combo = ttk.Combobox(cond, textvariable=self.auto_provider_c_var, values=provider_optional_values, state="readonly", width=18)
+        self.auto_provider_c_combo.grid(row=1, column=4, padx=2)
+
+        ttk.Label(cond, text="Room").grid(row=0, column=5, sticky="w")
         self.auto_room_combo = ttk.Combobox(cond, textvariable=self.auto_room_var, values=room_values, state="readonly", width=18)
-        self.auto_room_combo.grid(row=1, column=3, padx=2)
+        self.auto_room_combo.grid(row=1, column=5, padx=2)
 
-        ttk.Label(cond, text="Mode").grid(row=0, column=4, sticky="w")
-        ttk.Combobox(cond, textvariable=self.auto_mode_var, values=["individual", "group"], state="readonly", width=11).grid(row=1, column=4, padx=2)
+        ttk.Label(cond, text="Mode").grid(row=0, column=6, sticky="w")
+        ttk.Combobox(cond, textvariable=self.auto_mode_var, values=["individual", "group"], state="readonly", width=11).grid(row=1, column=6, padx=2)
 
-        ttk.Label(cond, text="Duration").grid(row=0, column=5, sticky="w")
-        ttk.Combobox(cond, textvariable=self.auto_duration_var, values=["30", "45", "60", "75", "90"], state="readonly", width=8).grid(row=1, column=5, padx=2)
+        ttk.Label(cond, text="Duration").grid(row=0, column=7, sticky="w")
+        ttk.Combobox(cond, textvariable=self.auto_duration_var, values=["30", "45", "60", "75", "90"], state="readonly", width=8).grid(row=1, column=7, padx=2)
 
         ttk.Label(cond, text="Patient Scope").grid(row=2, column=0, sticky="w", pady=(6, 0))
         ttk.Combobox(cond, textvariable=self.auto_scope_var, values=["all", "single", "subset"], state="readonly", width=12).grid(row=3, column=0, padx=2)
@@ -536,9 +548,11 @@ class SchedulerDesktopApp:
         ttk.Combobox(cond, textvariable=self.auto_weekday_a_var, values=weekdays, state="readonly", width=12).grid(row=3, column=3, padx=2)
         ttk.Label(cond, text="Weekday B").grid(row=2, column=4, sticky="w", pady=(6, 0))
         ttk.Combobox(cond, textvariable=self.auto_weekday_b_var, values=["(none)"] + weekdays, state="readonly", width=12).grid(row=3, column=4, padx=2)
+        ttk.Label(cond, text="Weekday C").grid(row=2, column=5, sticky="w", pady=(6, 0))
+        ttk.Combobox(cond, textvariable=self.auto_weekday_c_var, values=["(none)"] + weekdays, state="readonly", width=12).grid(row=3, column=5, padx=2)
 
         week_frame = ttk.Frame(cond)
-        week_frame.grid(row=3, column=5, columnspan=2, sticky="w")
+        week_frame.grid(row=3, column=6, columnspan=2, sticky="w")
         ttk.Checkbutton(week_frame, text="W1", variable=self.auto_week_1_var).pack(side="left")
         ttk.Checkbutton(week_frame, text="W2", variable=self.auto_week_2_var).pack(side="left")
         ttk.Checkbutton(week_frame, text="W3", variable=self.auto_week_3_var).pack(side="left")
@@ -565,10 +579,12 @@ class SchedulerDesktopApp:
         list_frame = ttk.Labelframe(parent, text="Requirement List", padding=10)
         list_frame.pack(fill="both", expand=True, padx=6, pady=6)
 
-        self.auto_condition_list = self.scrolledtext.ScrolledText(list_frame, height=10, wrap=self.tk.WORD)
-        self.auto_condition_list.pack(fill="both", expand=True)
-        self.auto_condition_list.insert(self.tk.END, "No conditions added yet.\n")
-        self.auto_condition_list.configure(state=self.tk.DISABLED)
+        list_scroll = ttk.Scrollbar(list_frame, orient=self.tk.VERTICAL)
+        self.auto_condition_list = self.tk.Listbox(list_frame, height=10, yscrollcommand=list_scroll.set)
+        list_scroll.config(command=self.auto_condition_list.yview)
+        self.auto_condition_list.pack(side="left", fill="both", expand=True)
+        list_scroll.pack(side="right", fill="y")
+        self.auto_condition_list.bind("<<ListboxSelect>>", self._on_requirement_select)
 
         output_frame = ttk.Labelframe(parent, text="Generation Status / Bottleneck Report", padding=10)
         output_frame.pack(fill="both", expand=True, padx=6, pady=6)
@@ -749,9 +765,17 @@ class SchedulerDesktopApp:
         self.appt_provider_combo["values"] = self.provider_catalog
         self.provider_manage_combo["values"] = self.provider_catalog
         if hasattr(self, "auto_provider_combo"):
-            self.auto_provider_combo["values"] = ["Any provider"] + self.provider_catalog
-            if self.auto_provider_var.get() not in ["Any provider"] + self.provider_catalog:
+            primary_values = ["Any provider"] + self.provider_catalog
+            optional_values = ["(none)"] + self.provider_catalog
+            self.auto_provider_combo["values"] = primary_values
+            self.auto_provider_b_combo["values"] = optional_values
+            self.auto_provider_c_combo["values"] = optional_values
+            if self.auto_provider_var.get() not in primary_values:
                 self.auto_provider_var.set("Any provider")
+            if self.auto_provider_b_var.get() not in optional_values:
+                self.auto_provider_b_var.set("(none)")
+            if self.auto_provider_c_var.get() not in optional_values:
+                self.auto_provider_c_var.set("(none)")
         if self.provider_catalog and self.appt_provider_var.get() not in self.provider_catalog:
             self.appt_provider_var.set(self.provider_catalog[0])
         if self.provider_catalog and self.provider_selected_var.get() not in self.provider_catalog:
@@ -1122,17 +1146,24 @@ class SchedulerDesktopApp:
         weekdays = [weekday_map[self.auto_weekday_a_var.get()]]
         if self.auto_weekday_b_var.get() not in ("", "(none)"):
             weekdays.append(weekday_map[self.auto_weekday_b_var.get()])
+        if self.auto_weekday_c_var.get() not in ("", "(none)"):
+            weekdays.append(weekday_map[self.auto_weekday_c_var.get()])
 
         scope = self.auto_scope_var.get().strip()
         subset_ids = self._selected_patient_scope_ids()
 
         provider_choice = self.auto_provider_var.get().strip()
+        provider_choice_b = self.auto_provider_b_var.get().strip()
+        provider_choice_c = self.auto_provider_c_var.get().strip()
         room_choice = self.auto_room_var.get().strip()
+
+        provider_ids = [p for p in [provider_choice, provider_choice_b, provider_choice_c] if p not in ("", "Any provider", "(none)")]
 
         condition = {
             "id": self.auto_req_id_var.get().strip() or f"req_{len(self.auto_conditions)+1}",
             "discipline": self.auto_discipline_var.get().strip(),
-            "provider_id": "any" if provider_choice == "Any provider" else provider_choice,
+            "provider_id": "any" if provider_choice == "Any provider" and not provider_ids else (provider_ids[0] if provider_ids else provider_choice),
+            "provider_ids": provider_ids,
             "room_id": "any" if room_choice == "Any compatible room" else room_choice,
             "duration_minutes": int(self.auto_duration_var.get()),
             "session_mode": self.auto_mode_var.get().strip(),
@@ -1156,17 +1187,24 @@ class SchedulerDesktopApp:
         self._refresh_auto_condition_list()
         self.status_var.set(f"Status: Added requirement {condition['id']}")
 
-    def remove_selected_condition(self) -> None:
-        raw = self.auto_condition_list.get("1.0", self.tk.END)
-        line = raw.splitlines()[0] if raw.splitlines() else ""
-        if line.startswith("No conditions"):
-            raise ValueError("No requirements to remove")
+    def _on_requirement_select(self, _event=None) -> None:
+        if not self.auto_condition_list.curselection():
+            return
+        idx = int(self.auto_condition_list.curselection()[0])
+        if idx >= len(self.auto_conditions):
+            return
+        selected = self.auto_conditions[idx]
+        self.auto_req_id_var.set(selected["id"])
 
-        rid = self.auto_req_id_var.get().strip()
-        before = len(self.auto_conditions)
-        self.auto_conditions = [c for c in self.auto_conditions if c["id"] != rid]
-        if len(self.auto_conditions) == before:
-            raise ValueError("Set Requirement ID to remove in the Requirement ID field")
+    def remove_selected_condition(self) -> None:
+        selection = self.auto_condition_list.curselection()
+        if not selection:
+            raise ValueError("Select a requirement in the list first")
+        idx = int(selection[0])
+        if idx >= len(self.auto_conditions):
+            raise ValueError("Selected requirement is out of range")
+        rid = self.auto_conditions[idx]["id"]
+        self.auto_conditions.pop(idx)
         save_requirements_catalog(self.auto_conditions)
         self._refresh_auto_condition_list()
         self.status_var.set(f"Status: Removed requirement {rid}")
@@ -1178,22 +1216,23 @@ class SchedulerDesktopApp:
         self.status_var.set("Status: Cleared all requirements")
 
     def _refresh_auto_condition_list(self) -> None:
-        lines: List[str] = []
+        self.auto_condition_list.delete(0, self.tk.END)
         if not self.auto_conditions:
-            lines.append("No conditions added yet.")
-        else:
-            name_map = ["Mon", "Tue", "Wed", "Thu", "Fri"]
-            for idx, c in enumerate(self.auto_conditions, start=1):
-                days = ",".join(name_map[d] for d in c["weekdays"])
-                windows = "; ".join(f"{_to_ampm(w['start_minute'])}-{_to_ampm(w['end_minute'])}" for w in c["time_windows"])
-                hard_soft = "hard" if c.get("hard_constraint", True) else "soft"
-                lines.append(
-                    f"{idx}) {c['id']} | {c['discipline']} | provider={c['provider_id']} | room={c['room_id']} | "
-                    f"{c['session_mode']} {c['duration_minutes']}m | scope={c['patient_scope']} | days={days} | weeks={c['weeks']} | "
-                    f"windows={windows} | {hard_soft} p={c.get('priority', 100)}"
-                )
+            self.auto_condition_list.insert(self.tk.END, "No conditions added yet.")
+            return
 
-        self._set_text(self.auto_condition_list, "\n".join(lines))
+        name_map = ["Mon", "Tue", "Wed", "Thu", "Fri"]
+        for idx, c in enumerate(self.auto_conditions, start=1):
+            days = ",".join(name_map[d] for d in c["weekdays"])
+            windows = "; ".join(f"{_to_ampm(w['start_minute'])}-{_to_ampm(w['end_minute'])}" for w in c["time_windows"])
+            hard_soft = "hard" if c.get("hard_constraint", True) else "soft"
+            providers = c.get("provider_ids") or ([c.get("provider_id", "any")] if c.get("provider_id", "any") != "any" else ["any"])
+            line = (
+                f"{idx}) {c['id']} | {c['discipline']} | providers={','.join(providers)} | room={c['room_id']} | "
+                f"{c['session_mode']} {c['duration_minutes']}m | scope={c['patient_scope']} | days={days} | weeks={c['weeks']} | "
+                f"windows={windows} | {hard_soft} p={c.get('priority', 100)}"
+            )
+            self.auto_condition_list.insert(self.tk.END, line)
 
     def _build_auto_profile_template(self) -> Dict[str, Any]:
         start = parse_date_parts(self.auto_start_year_var.get(), self.auto_start_month_var.get(), self.auto_start_day_var.get())

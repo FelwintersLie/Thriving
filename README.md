@@ -182,3 +182,12 @@ Recommended first test tonight:
 5. Use the report panel to review bottlenecks if generation fails.
 6. If requirements change, click **Auto reconfigure existing schedule** to preserve as many existing appointments as possible.
 7. Use **Undo Auto reconfigure** from the manual tab to roll back one step.
+
+
+### Auto Generator controls explained
+- **W1 / W2 / W3**: choose which week(s) in the 3-week horizon the requirement applies to (week 1, week 2, week 3).
+- **Window Start / Window End**: define one allowable time range for that requirement (in HHMM, 15-minute increments).
+- **Add Window**: add another allowed time range for the same requirement (for example `0800-1400` and `1600-1700`).
+- **Windows**: shows all allowed windows currently attached to the requirement being built.
+- **Hard constraint**: if enabled, the scheduler treats the requirement as mandatory. If disabled, it is a soft preference and may be skipped when infeasible.
+- **Priority**: relative importance score used for soft preference handling (higher means more important).

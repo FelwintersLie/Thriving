@@ -94,6 +94,7 @@ def validate_requirement(requirement: Dict[str, Any]) -> Dict[str, Any]:
         "id": rid,
         "discipline": str(requirement["discipline"]),
         "provider_id": str(requirement.get("provider_id", "any")).strip() or "any",
+        "provider_ids": [str(v).strip() for v in requirement.get("provider_ids", []) if str(v).strip()],
         "room_id": str(requirement.get("room_id", "any")).strip() or "any",
         "duration_minutes": duration,
         "session_mode": mode,
@@ -106,6 +107,10 @@ def validate_requirement(requirement: Dict[str, Any]) -> Dict[str, Any]:
         "priority": int(requirement.get("priority", 100)),
         "group_size": int(requirement.get("group_size", 6)),
     }
+    if out["provider_ids"]:
+        out["provider_ids"] = sorted(dict.fromkeys(out["provider_ids"]))
+        out["provider_id"] = out["provider_ids"][0]
+
     return out
 
 
@@ -161,7 +166,9 @@ def _build_expanded_requests(
                         "group_key": req["id"] if req["session_mode"] == "group" else None,
                         "label": req["discipline"],
                     }
-                    if req["provider_id"] != "any":
+                    if req.get("provider_ids"):
+                        expanded_req["provider_ids"] = list(req["provider_ids"])
+                    elif req["provider_id"] != "any":
                         expanded_req["provider_id"] = req["provider_id"]
                     if req["room_id"] != "any":
                         expanded_req["room_id"] = req["room_id"]
@@ -255,8 +262,10 @@ def explain_infeasibility(
     by_requirement: Dict[str, List[str]] = {req["id"]: [] for req in validated}
 
     for req in validated:
-        if req["provider_id"] != "any" and req["provider_id"] not in provider_ids:
-            message = f"Unknown provider '{req['provider_id']}'"
+        listed_providers = req.get("provider_ids") or ([] if req["provider_id"] == "any" else [req["provider_id"]])
+        missing_providers = [pid for pid in listed_providers if pid not in provider_ids]
+        if missing_providers:
+            message = f"Unknown provider(s): {', '.join(missing_providers)}"
             issues.append(f"{req['id']}: {message}")
             by_requirement[req["id"]].append(message)
         if req["room_id"] != "any" and req["room_id"] not in room_ids:
@@ -273,11 +282,13 @@ def explain_infeasibility(
         demand: Dict[Tuple[str, str], int] = {}
         for exp in expanded:
             source = source_by_request_id[exp["id"]]
-            provider_id = source["provider_id"]
-            if provider_id == "any":
+            provider_choices = source.get("provider_ids") or ([] if source["provider_id"] == "any" else [source["provider_id"]])
+            if not provider_choices:
                 continue
-            key = (provider_id, exp["date_key"])
-            demand[key] = demand.get(key, 0) + int(exp["duration_minutes"])
+            share = max(1, int(exp["duration_minutes"]) // len(provider_choices))
+            for provider_id in provider_choices:
+                key = (provider_id, exp["date_key"])
+                demand[key] = demand.get(key, 0) + share
 
         provider_avail: Dict[Tuple[str, str], int] = {}
         for provider in providers:
@@ -303,7 +314,7 @@ def explain_infeasibility(
             avail = provider_avail.get((pid, d), 0)
             if mins > avail:
                 req_id = next(
-                    (r["id"] for r in validated if r["provider_id"] == pid),
+                    (r["id"] for r in validated if pid in (r.get("provider_ids") or ([] if r["provider_id"] == "any" else [r["provider_id"]]))),
                     "(unknown requirement)",
                 )
                 msg = f"Provider {pid} has demand {mins} min but only {avail} min available on {d}"

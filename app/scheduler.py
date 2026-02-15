@@ -97,6 +97,7 @@ class SessionRequest:
     group_key: Optional[str] = None
     label: Optional[str] = None
     provider_id: Optional[str] = None
+    provider_ids: Optional[Tuple[str, ...]] = None
     room_id: Optional[str] = None
 
     @property
@@ -168,6 +169,8 @@ class ScheduleEngine:
                 if req.discipline not in provider.disciplines:
                     continue
                 if req.provider_id and provider.id != req.provider_id:
+                    continue
+                if req.provider_ids and provider.id not in req.provider_ids:
                     continue
 
                 for room in rooms:

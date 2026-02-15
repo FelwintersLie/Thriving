@@ -129,6 +129,42 @@ class AutoSchedulerTests(unittest.TestCase):
         self.assertTrue(second["ok"])
         self.assertGreaterEqual(second["diff"]["unchanged"], 1)
 
+    def test_requirement_allows_multiple_provider_options(self):
+        template = self._template()
+        # add second eligible provider
+        template["providers"].append(
+            {
+                "id": "Heidi Greata",
+                "name": "Heidi Greata",
+                "disciplines": ["Speech-Language Pathology"],
+                "templates": [{"weekday": i, "windows": [{"start_minute": 480, "end_minute": 900}]} for i in range(5)],
+                "exceptions": [],
+            }
+        )
+        requirements = [
+            {
+                "id": "slp_choice",
+                "discipline": "Speech-Language Pathology",
+                "provider_id": "any",
+                "provider_ids": ["Daniel Fenton", "Heidi Greata"],
+                "room_id": "Room 1",
+                "duration_minutes": 60,
+                "session_mode": "individual",
+                "patient_scope": "single",
+                "patient_ids": ["1"],
+                "weekdays": [0],
+                "weeks": [1],
+                "time_windows": [{"start_minute": 480, "end_minute": 840}],
+                "hard_constraint": True,
+                "priority": 100,
+            }
+        ]
+        result = generate_three_week_schedule(profile_template=template, requirements=requirements)
+        self.assertTrue(result["ok"])
+        providers_used = {a["provider_id"] for a in result["assignments"].values()}
+        self.assertTrue(providers_used.intersection({"Daniel Fenton", "Heidi Greata"}))
+
+
 
 if __name__ == "__main__":
     unittest.main()
