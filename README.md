@@ -153,3 +153,9 @@ Recommended first test tonight:
 - Candidate explosion is capped per request with a clear error telling you to narrow windows.
 - Backtracking search has a maximum-state guard to prevent runaway solve attempts.
 - Payload validation now catches missing keys and invalid patient references before scheduling.
+
+
+## Visual update
+- The GUI now renders a color-coded patient schedule grid (time down left from 7:30 AM to 6:00 PM, patient columns across top).
+- Provider and request discipline selection now uses dropdown menus with the full requested discipline list.
+- The profile panel now shows a cleaner summary instead of raw JSON to reduce under-the-hood noise.

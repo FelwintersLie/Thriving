@@ -1,16 +1,65 @@
 from __future__ import annotations
 
 import json
-import traceback
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 from app.api_server import handle_generate
 from app.health_check import run_health_check
 from app.persistence import load_last_profile, save_last_profile, save_last_schedule
 from app.profile_io import build_sample_profile, load_profile, save_profile, validate_profile
 from app.windows_program import save_json
+
+DISCIPLINES = [
+    "Primary Care",
+    "Physical Therapy",
+    "Speech-Language Pathology",
+    "Athletic Trainer",
+    "Dietician",
+    "Neuropsychology",
+    "Psychiatry",
+    "Behavioral Health",
+    "Moral Injury",
+    "Reading Group",
+    "Accupuncture",
+    "Equine Therapy",
+    "Pharmacology",
+    "Art therapy group",
+    "Sleep group",
+    "Writing group",
+    "Supplements group",
+    "PT/Audiology Group",
+    "Audiology",
+    "Yoga",
+]
+
+DISCIPLINE_COLORS = {
+    "Primary Care": "#7cb5ec",
+    "Physical Therapy": "#f6c85f",
+    "Speech-Language Pathology": "#9fd356",
+    "Athletic Trainer": "#8dd3c7",
+    "Dietician": "#ffd166",
+    "Neuropsychology": "#f4978e",
+    "Psychiatry": "#a1c181",
+    "Behavioral Health": "#f4a261",
+    "Moral Injury": "#4895ef",
+    "Reading Group": "#00b4d8",
+    "Accupuncture": "#cdb4db",
+    "Equine Therapy": "#d4a373",
+    "Pharmacology": "#ff8fab",
+    "Art therapy group": "#b8c0ff",
+    "Sleep group": "#90e0ef",
+    "Writing group": "#a3cef1",
+    "Supplements group": "#d9ed92",
+    "PT/Audiology Group": "#80ed99",
+    "Audiology": "#94d2bd",
+    "Yoga": "#f9c74f",
+}
+
+GRID_START_MINUTE = 7 * 60 + 30
+GRID_END_MINUTE = 18 * 60
+GRID_SLOT_MINUTES = 15
 
 
 @dataclass
@@ -47,6 +96,54 @@ def _parse_csv(raw: str) -> List[str]:
     return [part.strip() for part in raw.split(",") if part.strip()]
 
 
+def _to_ampm(minute: int) -> str:
+    hour_24 = minute // 60
+    minute_of_hour = minute % 60
+    period = "AM" if hour_24 < 12 else "PM"
+    hour_12 = hour_24 % 12
+    if hour_12 == 0:
+        hour_12 = 12
+    return f"{hour_12}:{minute_of_hour:02d} {period}"
+
+
+def _grid_minutes() -> List[int]:
+    return list(range(GRID_START_MINUTE, GRID_END_MINUTE, GRID_SLOT_MINUTES))
+
+
+def build_patient_grid_data(
+    profile: Dict[str, Any],
+    result: Dict[str, Any],
+) -> Tuple[List[str], List[str], Dict[Tuple[int, str], Dict[str, str]]]:
+    patients = profile.get("patients", [])
+    patient_ids = [p.get("id", "Unknown") for p in patients]
+    patient_labels = [p.get("name") or p.get("id", "Unknown") for p in patients]
+    label_by_patient_id = dict(zip(patient_ids, patient_labels))
+
+    request_map = {r["id"]: r for r in profile.get("requests", []) if "id" in r}
+    assignments = result.get("assignments", {})
+
+    cell_map: Dict[Tuple[int, str], Dict[str, str]] = {}
+    for assignment in assignments.values():
+        req = request_map.get(assignment.get("request_id", ""), {})
+        discipline = req.get("discipline", "Other")
+        patient_list = req.get("patient_ids", [])
+        start = int(assignment["start_minute"])
+        end = int(assignment["end_minute"])
+        label = assignment.get("label") or discipline
+
+        for minute in range(start, end, GRID_SLOT_MINUTES):
+            if minute < GRID_START_MINUTE or minute >= GRID_END_MINUTE:
+                continue
+            for patient_id in patient_list:
+                patient_label = label_by_patient_id.get(patient_id, patient_id)
+                cell_map[(minute, patient_label)] = {
+                    "discipline": discipline,
+                    "label": label,
+                }
+
+    return _grid_minutes(), patient_labels, cell_map
+
+
 class SchedulerDesktopApp:
     def __init__(self) -> None:
         tk, ttk, messagebox, scrolledtext, filedialog = _safe_tk_import()
@@ -57,50 +154,61 @@ class SchedulerDesktopApp:
         self.filedialog = filedialog
 
         self.root = tk.Tk()
-        self.root.title("Therapy Scheduler - Proof of Concept")
-        self.root.geometry("1180x820")
+        self.root.title("Therapy Scheduler - Visual Planner")
+        self.root.geometry("1320x860")
 
         self.last_result: Dict[str, Any] | None = None
         self.loaded_profile: Dict[str, Any] | None = load_last_profile()
         self.loaded_profile_path: Path | None = None
 
+        self._apply_style()
         self._build_layout()
 
         if self.loaded_profile:
-            self.status_var.set("Status: Restored last profile from persistent storage")
+            self.status_var.set("Status: Restored last profile")
             self.profile_var.set("Profile: restored from data/last_profile.json")
             self._refresh_profile_preview()
+
+    def _apply_style(self) -> None:
+        style = self.ttk.Style()
+        style.theme_use("clam")
+        style.configure("TFrame", background="#eef6ff")
+        style.configure("TLabelframe", background="#eef6ff", borderwidth=2)
+        style.configure("TLabelframe.Label", background="#eef6ff", foreground="#0a3d62", font=("Segoe UI", 10, "bold"))
+        style.configure("TLabel", background="#eef6ff", foreground="#1b263b")
+        style.configure("TButton", font=("Segoe UI", 9, "bold"), padding=6)
 
     def _build_layout(self) -> None:
         tk = self.tk
         ttk = self.ttk
 
-        header = ttk.Frame(self.root, padding=10)
+        main = ttk.Frame(self.root, padding=10)
+        main.pack(fill=tk.BOTH, expand=True)
+
+        header = ttk.Frame(main)
         header.pack(fill=tk.X)
 
         ttk.Label(
             header,
-            text="Therapy Scheduler (Windows Proof of Concept)",
-            font=("Segoe UI", 15, "bold"),
+            text="Therapy Day Scheduler",
+            font=("Segoe UI", 20, "bold"),
+            foreground="#0b4f6c",
         ).pack(anchor="w")
-
         ttk.Label(
             header,
-            text=(
-                "Beginner flow: Health Check → Create/Load Profile → Add Data With Forms → Generate → Export"
-            ),
-        ).pack(anchor="w", pady=(4, 0))
+            text="Build a day plan with form inputs, then view a color-coded patient grid.",
+        ).pack(anchor="w", pady=(2, 8))
 
-        controls = ttk.Frame(self.root, padding=10)
+        controls = ttk.Frame(main)
         controls.pack(fill=tk.X)
 
         buttons = [
-            ("1) Run Health Check", self.run_health_check),
-            ("2) New Blank Profile", self.new_blank_profile),
-            ("3) Save Sample Profile", self.save_sample_profile),
-            ("4) Load Profile JSON", self.load_profile_from_file),
-            ("5) Generate", self.generate_from_loaded_profile),
-            ("6) Export", self.export_schedule),
+            ("Health Check", self.run_health_check),
+            ("New Blank Profile", self.new_blank_profile),
+            ("Save Sample Profile", self.save_sample_profile),
+            ("Load Profile", self.load_profile_from_file),
+            ("Generate Schedule", self.generate_from_loaded_profile),
+            ("Export Schedule", self.export_schedule),
             ("Save Profile", self.save_current_profile),
         ]
 
@@ -115,39 +223,28 @@ class SchedulerDesktopApp:
         self.profile_var = tk.StringVar(value="Profile: (none loaded)")
         ttk.Label(controls, textvariable=self.profile_var).grid(row=2, column=0, columnspan=7, sticky="w", padx=6)
 
-        middle = ttk.Panedwindow(self.root, orient=tk.HORIZONTAL)
-        middle.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+        upper = ttk.Panedwindow(main, orient=tk.HORIZONTAL)
+        upper.pack(fill=tk.BOTH, expand=True, pady=(8, 8))
 
-        form_wrap = ttk.Labelframe(middle, text="Form-based Data Entry", padding=8)
-        middle.add(form_wrap, weight=1)
-
+        form_wrap = ttk.Labelframe(upper, text="Form Inputs", padding=8)
+        upper.add(form_wrap, weight=2)
         self._build_form_panel(form_wrap)
 
-        preview_wrap = ttk.Labelframe(middle, text="Profile Preview", padding=8)
-        middle.add(preview_wrap, weight=1)
-        self.profile_text = self.scrolledtext.ScrolledText(preview_wrap, height=28, wrap=tk.WORD)
-        self.profile_text.pack(fill=tk.BOTH, expand=True)
-        self.profile_text.insert(tk.END, "Create a blank profile or load/save one to begin.\n")
-        self.profile_text.configure(state=tk.DISABLED)
-
-        bottom = ttk.Panedwindow(self.root, orient=tk.VERTICAL)
-        bottom.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
-
-        summary_frame = ttk.Labelframe(bottom, text="Schedule Snapshot", padding=8)
-        bottom.add(summary_frame, weight=1)
-
-        self.summary_text = self.scrolledtext.ScrolledText(summary_frame, height=8, wrap=tk.WORD)
+        preview_wrap = ttk.Labelframe(upper, text="Profile Summary", padding=8)
+        upper.add(preview_wrap, weight=1)
+        self.summary_text = self.scrolledtext.ScrolledText(preview_wrap, height=22, wrap=tk.WORD, font=("Consolas", 10))
         self.summary_text.pack(fill=tk.BOTH, expand=True)
-        self.summary_text.insert(tk.END, "Generate a schedule to see assignments.\n")
+        self.summary_text.insert(tk.END, "Create or load a profile to begin.\n")
         self.summary_text.configure(state=tk.DISABLED)
 
-        timeline_frame = ttk.Labelframe(bottom, text="Room Timeline Preview (15-minute labels)", padding=8)
-        bottom.add(timeline_frame, weight=2)
+        grid_wrap = ttk.Labelframe(main, text="Patient Schedule Grid (7:30 AM to 6:00 PM)", padding=8)
+        grid_wrap.pack(fill=tk.BOTH, expand=True)
 
-        self.timeline_text = self.scrolledtext.ScrolledText(timeline_frame, height=12, wrap=tk.WORD)
-        self.timeline_text.pack(fill=tk.BOTH, expand=True)
-        self.timeline_text.insert(tk.END, "Generate a schedule to view room timelines.\n")
-        self.timeline_text.configure(state=tk.DISABLED)
+        self.grid_canvas = tk.Canvas(grid_wrap, bg="white", highlightthickness=0)
+        self.grid_canvas.pack(fill=tk.BOTH, expand=True)
+
+        self.legend_var = tk.StringVar(value="Legend: Generate a schedule to see discipline colors.")
+        ttk.Label(main, textvariable=self.legend_var).pack(anchor="w", pady=(6, 0))
 
     def _build_form_panel(self, parent) -> None:
         ttk = self.ttk
@@ -156,16 +253,16 @@ class SchedulerDesktopApp:
         day_frame.pack(fill="x", pady=(0, 6))
         self.date_var = self.tk.StringVar(value="2026-02-11")
         self.weekday_var = self.tk.StringVar(value="2")
-        self.day_start_var = self.tk.StringVar(value="480")
-        self.day_end_var = self.tk.StringVar(value="960")
+        self.day_start_var = self.tk.StringVar(value="450")
+        self.day_end_var = self.tk.StringVar(value="1080")
 
-        ttk.Label(day_frame, text="Date (YYYY-MM-DD)").grid(row=0, column=0, sticky="w")
-        ttk.Entry(day_frame, textvariable=self.date_var, width=14).grid(row=0, column=1, padx=4)
+        ttk.Label(day_frame, text="Date").grid(row=0, column=0, sticky="w")
+        ttk.Entry(day_frame, textvariable=self.date_var, width=12).grid(row=0, column=1, padx=4)
         ttk.Label(day_frame, text="Weekday (Mon=0)").grid(row=0, column=2, sticky="w")
         ttk.Entry(day_frame, textvariable=self.weekday_var, width=6).grid(row=0, column=3, padx=4)
-        ttk.Label(day_frame, text="Day Start Minute").grid(row=1, column=0, sticky="w")
+        ttk.Label(day_frame, text="Start Minute").grid(row=1, column=0, sticky="w")
         ttk.Entry(day_frame, textvariable=self.day_start_var, width=8).grid(row=1, column=1, padx=4)
-        ttk.Label(day_frame, text="Day End Minute").grid(row=1, column=2, sticky="w")
+        ttk.Label(day_frame, text="End Minute").grid(row=1, column=2, sticky="w")
         ttk.Entry(day_frame, textvariable=self.day_end_var, width=8).grid(row=1, column=3, padx=4)
         ttk.Button(day_frame, text="Apply Day Settings", command=lambda: self._safe_action(self.apply_day_settings)).grid(
             row=2, column=0, columnspan=4, pady=(6, 0), sticky="w"
@@ -175,23 +272,30 @@ class SchedulerDesktopApp:
         provider_frame.pack(fill="x", pady=(0, 6))
         self.provider_id_var = self.tk.StringVar()
         self.provider_name_var = self.tk.StringVar()
-        self.provider_disciplines_var = self.tk.StringVar(value="physical_therapy")
-        self.provider_start_var = self.tk.StringVar(value="480")
-        self.provider_end_var = self.tk.StringVar(value="960")
+        self.provider_start_var = self.tk.StringVar(value="450")
+        self.provider_end_var = self.tk.StringVar(value="1080")
+        self.provider_discipline_var = self.tk.StringVar(value=DISCIPLINES[0])
 
         self._labeled_entry(provider_frame, 0, "ID", self.provider_id_var)
         self._labeled_entry(provider_frame, 1, "Name", self.provider_name_var)
-        self._labeled_entry(provider_frame, 2, "Disciplines (csv)", self.provider_disciplines_var)
-        self._labeled_entry(provider_frame, 3, "Avail Start", self.provider_start_var)
-        self._labeled_entry(provider_frame, 4, "Avail End", self.provider_end_var)
+        self._labeled_entry(provider_frame, 2, "Avail Start", self.provider_start_var)
+        self._labeled_entry(provider_frame, 3, "Avail End", self.provider_end_var)
+        self.ttk.Label(provider_frame, text="Discipline").grid(row=0, column=4, sticky="w")
+        self.ttk.Combobox(
+            provider_frame,
+            textvariable=self.provider_discipline_var,
+            values=DISCIPLINES,
+            state="readonly",
+            width=24,
+        ).grid(row=1, column=4, padx=2)
         ttk.Button(provider_frame, text="Add Provider", command=lambda: self._safe_action(self.add_provider)).grid(row=0, column=5, rowspan=2, padx=4)
 
         patient_frame = ttk.Labelframe(parent, text="Add Patient", padding=6)
         patient_frame.pack(fill="x", pady=(0, 6))
         self.patient_id_var = self.tk.StringVar()
         self.patient_name_var = self.tk.StringVar()
-        self.patient_start_var = self.tk.StringVar(value="480")
-        self.patient_end_var = self.tk.StringVar(value="960")
+        self.patient_start_var = self.tk.StringVar(value="450")
+        self.patient_end_var = self.tk.StringVar(value="1080")
 
         self._labeled_entry(patient_frame, 0, "ID", self.patient_id_var)
         self._labeled_entry(patient_frame, 1, "Name", self.patient_name_var)
@@ -204,28 +308,35 @@ class SchedulerDesktopApp:
         self.room_id_var = self.tk.StringVar()
         self.room_name_var = self.tk.StringVar()
         self.room_capacity_var = self.tk.StringVar(value="1")
-        self.room_disciplines_var = self.tk.StringVar(value="physical_therapy")
+        self.room_disciplines_var = self.tk.StringVar(value=DISCIPLINES[0])
 
         self._labeled_entry(room_frame, 0, "ID", self.room_id_var)
         self._labeled_entry(room_frame, 1, "Name", self.room_name_var)
         self._labeled_entry(room_frame, 2, "Capacity", self.room_capacity_var)
-        self._labeled_entry(room_frame, 3, "Allowed disciplines (csv)", self.room_disciplines_var)
+        self._labeled_entry(room_frame, 3, "Allowed Disciplines (csv)", self.room_disciplines_var)
         ttk.Button(room_frame, text="Add Room", command=lambda: self._safe_action(self.add_room)).grid(row=0, column=4, rowspan=2, padx=4)
 
         req_frame = ttk.Labelframe(parent, text="Add Session Request", padding=6)
         req_frame.pack(fill="x")
         self.req_id_var = self.tk.StringVar()
         self.req_patient_ids_var = self.tk.StringVar()
-        self.req_discipline_var = self.tk.StringVar(value="physical_therapy")
         self.req_duration_var = self.tk.StringVar(value="30")
         self.req_mode_var = self.tk.StringVar(value="individual")
-        self.req_pref_start_var = self.tk.StringVar(value="480")
-        self.req_pref_end_var = self.tk.StringVar(value="960")
+        self.req_pref_start_var = self.tk.StringVar(value="450")
+        self.req_pref_end_var = self.tk.StringVar(value="1080")
         self.req_label_var = self.tk.StringVar()
+        self.req_discipline_var = self.tk.StringVar(value=DISCIPLINES[1])
 
         self._labeled_entry(req_frame, 0, "ID", self.req_id_var)
         self._labeled_entry(req_frame, 1, "Patient IDs (csv)", self.req_patient_ids_var)
-        self._labeled_entry(req_frame, 2, "Discipline", self.req_discipline_var)
+        self.ttk.Label(req_frame, text="Discipline").grid(row=0, column=2, sticky="w")
+        self.ttk.Combobox(
+            req_frame,
+            textvariable=self.req_discipline_var,
+            values=DISCIPLINES,
+            state="readonly",
+            width=24,
+        ).grid(row=1, column=2, padx=2)
         self._labeled_entry(req_frame, 3, "Duration", self.req_duration_var)
         self._labeled_entry(req_frame, 4, "Mode", self.req_mode_var)
         self._labeled_entry(req_frame, 5, "Preferred Start", self.req_pref_start_var)
@@ -241,11 +352,8 @@ class SchedulerDesktopApp:
         try:
             fn()
         except Exception as exc:
-            self.status_var.set("Status: Error (see popup)")
-            self.messagebox.showerror(
-                "Something went wrong",
-                f"{exc}\n\nTechnical details:\n{traceback.format_exc(limit=3)}",
-            )
+            self.status_var.set("Status: Error")
+            self.messagebox.showerror("Action failed", str(exc))
 
     def _set_text(self, widget, text: str) -> None:
         widget.configure(state=self.tk.NORMAL)
@@ -255,7 +363,7 @@ class SchedulerDesktopApp:
 
     def _require_profile(self) -> Dict[str, Any]:
         if not self.loaded_profile:
-            raise ValueError("No profile loaded. Click 'New Blank Profile' or load/save sample profile first.")
+            raise ValueError("No profile loaded. Click 'New Blank Profile' first.")
         return self.loaded_profile
 
     def _autosave_profile(self) -> None:
@@ -265,9 +373,83 @@ class SchedulerDesktopApp:
     def _refresh_profile_preview(self) -> None:
         if not self.loaded_profile:
             return
-        pretty = json.dumps(self.loaded_profile, indent=2)
-        self._set_text(self.profile_text, pretty[:12000])
+        profile = self.loaded_profile
+        lines = [
+            "Profile Overview",
+            f"Date: {profile.get('date_key')}",
+            f"Weekday: {profile.get('weekday')}",
+            f"Providers: {len(profile.get('providers', []))}",
+            f"Patients: {len(profile.get('patients', []))}",
+            f"Rooms: {len(profile.get('rooms', []))}",
+            f"Requests: {len(profile.get('requests', []))}",
+            "",
+            "Patient IDs:",
+        ]
+        for p in profile.get("patients", []):
+            lines.append(f"- {p.get('id')} ({p.get('name', 'No name')})")
+
+        self._set_text(self.summary_text, "\n".join(lines))
         self._autosave_profile()
+
+    def _render_patient_grid(self, profile: Dict[str, Any], result: Dict[str, Any]) -> None:
+        canvas = self.grid_canvas
+        canvas.delete("all")
+
+        minutes, patient_labels, cell_map = build_patient_grid_data(profile, result)
+        if not patient_labels:
+            canvas.create_text(16, 20, anchor="w", text="Add at least one patient to render grid.", fill="#003049", font=("Segoe UI", 11, "bold"))
+            return
+
+        time_col_w = 85
+        header_h = 34
+        row_h = 22
+        patient_col_w = 130
+
+        total_w = time_col_w + len(patient_labels) * patient_col_w
+        total_h = header_h + len(minutes) * row_h
+        canvas.config(scrollregion=(0, 0, total_w, total_h))
+
+        # Header
+        canvas.create_rectangle(0, 0, time_col_w, header_h, fill="#0b4f6c", outline="#0b4f6c")
+        canvas.create_text(time_col_w // 2, header_h // 2, text="Time", fill="white", font=("Segoe UI", 10, "bold"))
+
+        for idx, label in enumerate(patient_labels):
+            x0 = time_col_w + idx * patient_col_w
+            x1 = x0 + patient_col_w
+            canvas.create_rectangle(x0, 0, x1, header_h, fill="#1d3557", outline="#f1faee")
+            canvas.create_text((x0 + x1) // 2, header_h // 2, text=label, fill="white", font=("Segoe UI", 9, "bold"))
+
+        used_disciplines = set()
+
+        # Body rows
+        for row_idx, minute in enumerate(minutes):
+            y0 = header_h + row_idx * row_h
+            y1 = y0 + row_h
+            time_fill = "#f8f9fa" if row_idx % 2 == 0 else "#e9ecef"
+            canvas.create_rectangle(0, y0, time_col_w, y1, fill=time_fill, outline="#adb5bd")
+            canvas.create_text(time_col_w // 2, (y0 + y1) // 2, text=_to_ampm(minute), fill="#1b263b", font=("Segoe UI", 8))
+
+            for col_idx, patient_label in enumerate(patient_labels):
+                x0 = time_col_w + col_idx * patient_col_w
+                x1 = x0 + patient_col_w
+                cell = cell_map.get((minute, patient_label))
+                if cell:
+                    discipline = cell["discipline"]
+                    used_disciplines.add(discipline)
+                    fill = DISCIPLINE_COLORS.get(discipline, "#ffb3c1")
+                    text = discipline
+                else:
+                    fill = "#ffffff"
+                    text = ""
+                canvas.create_rectangle(x0, y0, x1, y1, fill=fill, outline="#dee2e6")
+                if text:
+                    canvas.create_text((x0 + x1) // 2, (y0 + y1) // 2, text=text, fill="#1b263b", font=("Segoe UI", 7))
+
+        if used_disciplines:
+            legend = "Legend: " + " | ".join(sorted(used_disciplines))
+            self.legend_var.set(legend)
+        else:
+            self.legend_var.set("Legend: No assigned sessions in 7:30 AM - 6:00 PM window")
 
     def run_health_check(self) -> None:
         result = run_health_check()
@@ -280,14 +462,14 @@ class SchedulerDesktopApp:
         self.loaded_profile = {
             "date_key": "2026-02-11",
             "weekday": 2,
-            "day_window": {"start_minute": 8 * 60, "end_minute": 16 * 60},
+            "day_window": {"start_minute": GRID_START_MINUTE, "end_minute": GRID_END_MINUTE},
             "providers": [],
             "patients": [],
             "rooms": [],
             "requests": [],
         }
         self.loaded_profile_path = None
-        self.profile_var.set("Profile: unsaved in-memory profile")
+        self.profile_var.set("Profile: unsaved")
         self.status_var.set("Status: Created blank profile")
         self._refresh_profile_preview()
 
@@ -308,15 +490,12 @@ class SchedulerDesktopApp:
         self.loaded_profile = profile
         self.loaded_profile_path = path
         self.profile_var.set(f"Profile: {path}")
-        self.status_var.set(f"Status: Saved sample profile to {path}")
+        self.status_var.set("Status: Saved sample profile")
         self._refresh_profile_preview()
-        self.messagebox.showinfo("Profile saved", f"Saved sample profile to:\n{path}")
+        self.messagebox.showinfo("Profile saved", f"Saved profile to:\n{path}")
 
     def load_profile_from_file(self) -> None:
-        path_raw = self.filedialog.askopenfilename(
-            title="Select profile JSON",
-            filetypes=[("JSON files", "*.json")],
-        )
+        path_raw = self.filedialog.askopenfilename(title="Select profile JSON", filetypes=[("JSON files", "*.json")])
         if not path_raw:
             return
         path = Path(path_raw)
@@ -344,19 +523,15 @@ class SchedulerDesktopApp:
         provider_id = self.provider_id_var.get().strip()
         if not provider_id:
             raise ValueError("Provider ID is required")
+
         provider = {
             "id": provider_id,
             "name": self.provider_name_var.get().strip() or provider_id,
-            "disciplines": _parse_csv(self.provider_disciplines_var.get()),
+            "disciplines": [self.provider_discipline_var.get()],
             "templates": [
                 {
                     "weekday": int(profile["weekday"]),
-                    "windows": [
-                        {
-                            "start_minute": int(self.provider_start_var.get()),
-                            "end_minute": int(self.provider_end_var.get()),
-                        }
-                    ],
+                    "windows": [{"start_minute": int(self.provider_start_var.get()), "end_minute": int(self.provider_end_var.get())}],
                 }
             ],
             "exceptions": [],
@@ -375,12 +550,7 @@ class SchedulerDesktopApp:
             "id": patient_id,
             "name": self.patient_name_var.get().strip() or patient_id,
             "availability": {
-                date_key: [
-                    {
-                        "start_minute": int(self.patient_start_var.get()),
-                        "end_minute": int(self.patient_end_var.get()),
-                    }
-                ]
+                date_key: [{"start_minute": int(self.patient_start_var.get()), "end_minute": int(self.patient_end_var.get())}]
             },
         }
         profile["patients"].append(patient)
@@ -410,7 +580,7 @@ class SchedulerDesktopApp:
         request = {
             "id": req_id,
             "patient_ids": _parse_csv(self.req_patient_ids_var.get()),
-            "discipline": self.req_discipline_var.get().strip(),
+            "discipline": self.req_discipline_var.get(),
             "duration_minutes": int(self.req_duration_var.get()),
             "mode": self.req_mode_var.get().strip().lower(),
             "date_key": profile["date_key"],
@@ -441,7 +611,7 @@ class SchedulerDesktopApp:
         save_profile(path, profile)
         self.loaded_profile_path = path
         self.profile_var.set(f"Profile: {path}")
-        self.status_var.set(f"Status: Profile saved to {path}")
+        self.status_var.set(f"Status: Profile saved")
         self._autosave_profile()
 
     def generate_from_loaded_profile(self) -> None:
@@ -449,38 +619,12 @@ class SchedulerDesktopApp:
         result = handle_generate(profile)
         self.last_result = result
         save_last_schedule(result)
+
         summary = summarize_schedule(result)
-
-        assignments = result.get("assignments", {})
-        lines = [
-            f"Assignments scheduled: {summary.assignment_count}",
-            f"Rooms in timeline: {summary.room_count}",
-            f"Booked 15-min slots: {summary.booked_slot_count}",
-            "",
-            "Assignments:",
-        ]
-        for req_id in sorted(assignments.keys()):
-            a = assignments[req_id]
-            lines.append(
-                f"- {req_id}: {a['label']} | provider={a['provider_id']} | room={a['room_id']} "
-                f"{a['start_minute']}-{a['end_minute']}"
-            )
-
-        timeline_lines: List[str] = []
-        for room_id in sorted(result.get("room_timeline", {}).keys()):
-            timeline_lines.append(f"[{room_id}]")
-            room_slots = result["room_timeline"][room_id]
-            booked_slots = [s for s in room_slots if s["status"] == "booked"]
-            if not booked_slots:
-                timeline_lines.append("  - no booked slots")
-            else:
-                for s in booked_slots[:20]:
-                    timeline_lines.append(f"  - {s['start_minute']}-{s['end_minute']}: {s['label']} ({s['mode']})")
-            timeline_lines.append("")
-
-        self._set_text(self.summary_text, "\n".join(lines))
-        self._set_text(self.timeline_text, "\n".join(timeline_lines))
-        self.status_var.set("Status: Schedule generated")
+        self.status_var.set(
+            f"Status: Generated {summary.assignment_count} sessions across {summary.room_count} rooms"
+        )
+        self._render_patient_grid(profile, result)
 
     def export_schedule(self) -> None:
         if not self.last_result:
