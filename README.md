@@ -159,3 +159,5 @@ Recommended first test tonight:
 - The GUI now renders a color-coded patient schedule grid (time down left from 7:30 AM to 6:00 PM, patient columns across top).
 - Provider and request discipline selection now uses dropdown menus with the full requested discipline list.
 - The profile panel now shows a cleaner summary instead of raw JSON to reduce under-the-hood noise.
+
+- Time entry fields in the GUI now accept HHMM military-time input (examples: `0730`, `1100`, `1600`) and convert automatically to scheduler minutes.

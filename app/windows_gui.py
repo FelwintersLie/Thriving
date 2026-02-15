@@ -110,6 +110,27 @@ def _grid_minutes() -> List[int]:
     return list(range(GRID_START_MINUTE, GRID_END_MINUTE, GRID_SLOT_MINUTES))
 
 
+def parse_time_input(raw: str) -> int:
+    value = raw.strip()
+    if not value:
+        raise ValueError("Time is required. Use HHMM, e.g., 0730 or 1600")
+    if not value.isdigit():
+        raise ValueError(f"Invalid time '{raw}'. Use HHMM, e.g., 0730 or 1600")
+    if len(value) not in (3, 4):
+        raise ValueError(f"Invalid time '{raw}'. Use 3 or 4 digits in HHMM format")
+
+    if len(value) == 3:
+        value = "0" + value
+
+    hour = int(value[:2])
+    minute = int(value[2:])
+    if hour > 23 or minute > 59:
+        raise ValueError(f"Invalid military time '{raw}'. Hour must be 00-23 and minute 00-59")
+    if minute % GRID_SLOT_MINUTES != 0:
+        raise ValueError(f"Time '{raw}' must be on a 15-minute boundary (00, 15, 30, 45)")
+    return hour * 60 + minute
+
+
 def build_patient_grid_data(
     profile: Dict[str, Any],
     result: Dict[str, Any],
@@ -253,16 +274,16 @@ class SchedulerDesktopApp:
         day_frame.pack(fill="x", pady=(0, 6))
         self.date_var = self.tk.StringVar(value="2026-02-11")
         self.weekday_var = self.tk.StringVar(value="2")
-        self.day_start_var = self.tk.StringVar(value="450")
-        self.day_end_var = self.tk.StringVar(value="1080")
+        self.day_start_var = self.tk.StringVar(value="0730")
+        self.day_end_var = self.tk.StringVar(value="1800")
 
         ttk.Label(day_frame, text="Date").grid(row=0, column=0, sticky="w")
         ttk.Entry(day_frame, textvariable=self.date_var, width=12).grid(row=0, column=1, padx=4)
         ttk.Label(day_frame, text="Weekday (Mon=0)").grid(row=0, column=2, sticky="w")
         ttk.Entry(day_frame, textvariable=self.weekday_var, width=6).grid(row=0, column=3, padx=4)
-        ttk.Label(day_frame, text="Start Minute").grid(row=1, column=0, sticky="w")
+        ttk.Label(day_frame, text="Start (HHMM)").grid(row=1, column=0, sticky="w")
         ttk.Entry(day_frame, textvariable=self.day_start_var, width=8).grid(row=1, column=1, padx=4)
-        ttk.Label(day_frame, text="End Minute").grid(row=1, column=2, sticky="w")
+        ttk.Label(day_frame, text="End (HHMM)").grid(row=1, column=2, sticky="w")
         ttk.Entry(day_frame, textvariable=self.day_end_var, width=8).grid(row=1, column=3, padx=4)
         ttk.Button(day_frame, text="Apply Day Settings", command=lambda: self._safe_action(self.apply_day_settings)).grid(
             row=2, column=0, columnspan=4, pady=(6, 0), sticky="w"
@@ -272,14 +293,14 @@ class SchedulerDesktopApp:
         provider_frame.pack(fill="x", pady=(0, 6))
         self.provider_id_var = self.tk.StringVar()
         self.provider_name_var = self.tk.StringVar()
-        self.provider_start_var = self.tk.StringVar(value="450")
-        self.provider_end_var = self.tk.StringVar(value="1080")
+        self.provider_start_var = self.tk.StringVar(value="0730")
+        self.provider_end_var = self.tk.StringVar(value="1800")
         self.provider_discipline_var = self.tk.StringVar(value=DISCIPLINES[0])
 
         self._labeled_entry(provider_frame, 0, "ID", self.provider_id_var)
         self._labeled_entry(provider_frame, 1, "Name", self.provider_name_var)
-        self._labeled_entry(provider_frame, 2, "Avail Start", self.provider_start_var)
-        self._labeled_entry(provider_frame, 3, "Avail End", self.provider_end_var)
+        self._labeled_entry(provider_frame, 2, "Avail Start (HHMM)", self.provider_start_var)
+        self._labeled_entry(provider_frame, 3, "Avail End (HHMM)", self.provider_end_var)
         self.ttk.Label(provider_frame, text="Discipline").grid(row=0, column=4, sticky="w")
         self.ttk.Combobox(
             provider_frame,
@@ -294,13 +315,13 @@ class SchedulerDesktopApp:
         patient_frame.pack(fill="x", pady=(0, 6))
         self.patient_id_var = self.tk.StringVar()
         self.patient_name_var = self.tk.StringVar()
-        self.patient_start_var = self.tk.StringVar(value="450")
-        self.patient_end_var = self.tk.StringVar(value="1080")
+        self.patient_start_var = self.tk.StringVar(value="0730")
+        self.patient_end_var = self.tk.StringVar(value="1800")
 
         self._labeled_entry(patient_frame, 0, "ID", self.patient_id_var)
         self._labeled_entry(patient_frame, 1, "Name", self.patient_name_var)
-        self._labeled_entry(patient_frame, 2, "Avail Start", self.patient_start_var)
-        self._labeled_entry(patient_frame, 3, "Avail End", self.patient_end_var)
+        self._labeled_entry(patient_frame, 2, "Avail Start (HHMM)", self.patient_start_var)
+        self._labeled_entry(patient_frame, 3, "Avail End (HHMM)", self.patient_end_var)
         ttk.Button(patient_frame, text="Add Patient", command=lambda: self._safe_action(self.add_patient)).grid(row=0, column=4, rowspan=2, padx=4)
 
         room_frame = ttk.Labelframe(parent, text="Add Room", padding=6)
@@ -322,8 +343,8 @@ class SchedulerDesktopApp:
         self.req_patient_ids_var = self.tk.StringVar()
         self.req_duration_var = self.tk.StringVar(value="30")
         self.req_mode_var = self.tk.StringVar(value="individual")
-        self.req_pref_start_var = self.tk.StringVar(value="450")
-        self.req_pref_end_var = self.tk.StringVar(value="1080")
+        self.req_pref_start_var = self.tk.StringVar(value="0730")
+        self.req_pref_end_var = self.tk.StringVar(value="1800")
         self.req_label_var = self.tk.StringVar()
         self.req_discipline_var = self.tk.StringVar(value=DISCIPLINES[1])
 
@@ -339,8 +360,8 @@ class SchedulerDesktopApp:
         ).grid(row=1, column=2, padx=2)
         self._labeled_entry(req_frame, 3, "Duration", self.req_duration_var)
         self._labeled_entry(req_frame, 4, "Mode", self.req_mode_var)
-        self._labeled_entry(req_frame, 5, "Preferred Start", self.req_pref_start_var)
-        self._labeled_entry(req_frame, 6, "Preferred End", self.req_pref_end_var)
+        self._labeled_entry(req_frame, 5, "Preferred Start (HHMM)", self.req_pref_start_var)
+        self._labeled_entry(req_frame, 6, "Preferred End (HHMM)", self.req_pref_end_var)
         self._labeled_entry(req_frame, 7, "Label", self.req_label_var)
         ttk.Button(req_frame, text="Add Request", command=lambda: self._safe_action(self.add_request)).grid(row=0, column=8, rowspan=2, padx=4)
 
@@ -511,8 +532,8 @@ class SchedulerDesktopApp:
         profile["date_key"] = self.date_var.get().strip()
         profile["weekday"] = int(self.weekday_var.get())
         profile["day_window"] = {
-            "start_minute": int(self.day_start_var.get()),
-            "end_minute": int(self.day_end_var.get()),
+            "start_minute": parse_time_input(self.day_start_var.get()),
+            "end_minute": parse_time_input(self.day_end_var.get()),
         }
         validate_profile(profile)
         self.status_var.set("Status: Day settings applied")
@@ -531,7 +552,7 @@ class SchedulerDesktopApp:
             "templates": [
                 {
                     "weekday": int(profile["weekday"]),
-                    "windows": [{"start_minute": int(self.provider_start_var.get()), "end_minute": int(self.provider_end_var.get())}],
+                    "windows": [{"start_minute": parse_time_input(self.provider_start_var.get()), "end_minute": parse_time_input(self.provider_end_var.get())}],
                 }
             ],
             "exceptions": [],
@@ -550,7 +571,7 @@ class SchedulerDesktopApp:
             "id": patient_id,
             "name": self.patient_name_var.get().strip() or patient_id,
             "availability": {
-                date_key: [{"start_minute": int(self.patient_start_var.get()), "end_minute": int(self.patient_end_var.get())}]
+                date_key: [{"start_minute": parse_time_input(self.patient_start_var.get()), "end_minute": parse_time_input(self.patient_end_var.get())}]
             },
         }
         profile["patients"].append(patient)
@@ -585,8 +606,8 @@ class SchedulerDesktopApp:
             "mode": self.req_mode_var.get().strip().lower(),
             "date_key": profile["date_key"],
             "preferred_window": {
-                "start_minute": int(self.req_pref_start_var.get()),
-                "end_minute": int(self.req_pref_end_var.get()),
+                "start_minute": parse_time_input(self.req_pref_start_var.get()),
+                "end_minute": parse_time_input(self.req_pref_end_var.get()),
             },
             "group_key": None,
             "label": self.req_label_var.get().strip() or req_id,

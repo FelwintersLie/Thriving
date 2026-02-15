@@ -1,6 +1,6 @@
 import unittest
 
-from app.windows_gui import DISCIPLINES, build_patient_grid_data, summarize_schedule
+from app.windows_gui import DISCIPLINES, build_patient_grid_data, parse_time_input, summarize_schedule
 
 
 class WindowsGuiHelperTests(unittest.TestCase):
@@ -58,6 +58,14 @@ class WindowsGuiHelperTests(unittest.TestCase):
         self.assertIn(450, minutes)
         self.assertIn((450, "Patient 1"), cell_map)
         self.assertEqual(cell_map[(450, "Patient 1")]["discipline"], "Physical Therapy")
+
+
+    def test_parse_time_input_military_time(self):
+        self.assertEqual(parse_time_input("1600"), 960)
+        self.assertEqual(parse_time_input("0730"), 450)
+
+        with self.assertRaises(ValueError):
+            parse_time_input("1661")
 
 
 if __name__ == "__main__":
