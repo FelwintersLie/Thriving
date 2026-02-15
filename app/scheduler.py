@@ -96,6 +96,8 @@ class SessionRequest:
     preferred_window: Optional[TimeWindow] = None
     group_key: Optional[str] = None
     label: Optional[str] = None
+    provider_id: Optional[str] = None
+    room_id: Optional[str] = None
 
     @property
     def slot_count(self) -> int:
@@ -165,8 +167,12 @@ class ScheduleEngine:
             for provider in providers:
                 if req.discipline not in provider.disciplines:
                     continue
+                if req.provider_id and provider.id != req.provider_id:
+                    continue
 
                 for room in rooms:
+                    if req.room_id and room.id != req.room_id:
+                        continue
                     if req.discipline not in room.allowed_disciplines:
                         continue
                     if len(req.patient_ids) > room.capacity:

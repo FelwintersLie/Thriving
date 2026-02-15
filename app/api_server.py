@@ -94,12 +94,14 @@ def _requests(raw_list: List[Dict[str, Any]], date_key: str) -> List[SessionRequ
                 preferred_window=_time_window(preferred) if preferred else None,
                 group_key=raw.get("group_key"),
                 label=raw.get("label"),
+                provider_id=raw.get("provider_id"),
+                room_id=raw.get("room_id"),
             )
         )
     return out
 
 
-def _assignment_to_dict(a: Assignment) -> Dict[str, Any]:
+def _assignment_to_dict(a: Assignment, date_key: str | None = None) -> Dict[str, Any]:
     return {
         "request_id": a.request_id,
         "provider_id": a.provider_id,
@@ -108,6 +110,7 @@ def _assignment_to_dict(a: Assignment) -> Dict[str, Any]:
         "end_minute": a.end_minute,
         "label": a.label,
         "mode": a.mode.value,
+        "date_key": date_key,
     }
 
 
@@ -181,7 +184,7 @@ def handle_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
     timeline = build_room_timeline(rooms=rooms, assignments=generated, day_window=day_window)
 
     return {
-        "assignments": {req_id: _assignment_to_dict(a) for req_id, a in generated.items()},
+        "assignments": {req_id: _assignment_to_dict(a, date_key) for req_id, a in generated.items()},
         "room_timeline": timeline,
     }
 

@@ -10,6 +10,10 @@ LAST_PROFILE_PATH = Path("data") / "last_profile.json"
 LAST_SCHEDULE_PATH = Path("data") / "last_schedule.json"
 PROVIDER_CATALOG_PATH = Path("data") / "provider_catalog.json"
 
+REQUIREMENTS_CATALOG_PATH = Path("data") / "requirements_catalog.json"
+LAST_GENERATED_SCHEDULE_PATH = Path("data") / "last_generated_schedule.json"
+PROVIDER_PROFILES_PATH = Path("data") / "provider_profiles.json"
+
 
 def _read_json(path: Path) -> Dict[str, Any]:
     if not path.exists():
@@ -75,3 +79,48 @@ def save_provider_catalog(providers: List[str]) -> Path:
     state["provider_catalog_file"] = str(PROVIDER_CATALOG_PATH)
     save_state(state)
     return PROVIDER_CATALOG_PATH
+
+
+def load_requirements_catalog() -> List[Dict[str, Any]]:
+    payload = _read_json(REQUIREMENTS_CATALOG_PATH)
+    values = payload.get("requirements") if payload else None
+    if not isinstance(values, list):
+        return []
+    return values
+
+
+def save_requirements_catalog(requirements: List[Dict[str, Any]]) -> Path:
+    _write_json(REQUIREMENTS_CATALOG_PATH, {"requirements": requirements})
+    state = load_state()
+    state["requirements_catalog_file"] = str(REQUIREMENTS_CATALOG_PATH)
+    save_state(state)
+    return REQUIREMENTS_CATALOG_PATH
+
+
+def load_provider_profiles() -> Dict[str, Any]:
+    payload = _read_json(PROVIDER_PROFILES_PATH)
+    profiles = payload.get("providers") if payload else None
+    if not isinstance(profiles, list):
+        return {"providers": []}
+    return {"providers": profiles}
+
+
+def save_provider_profiles(providers: List[Dict[str, Any]]) -> Path:
+    _write_json(PROVIDER_PROFILES_PATH, {"providers": providers})
+    state = load_state()
+    state["provider_profiles_file"] = str(PROVIDER_PROFILES_PATH)
+    save_state(state)
+    return PROVIDER_PROFILES_PATH
+
+
+def load_last_generated_schedule() -> Dict[str, Any] | None:
+    payload = _read_json(LAST_GENERATED_SCHEDULE_PATH)
+    return payload if payload else None
+
+
+def save_last_generated_schedule(schedule: Dict[str, Any]) -> Path:
+    _write_json(LAST_GENERATED_SCHEDULE_PATH, schedule)
+    state = load_state()
+    state["last_generated_schedule_file"] = str(LAST_GENERATED_SCHEDULE_PATH)
+    save_state(state)
+    return LAST_GENERATED_SCHEDULE_PATH

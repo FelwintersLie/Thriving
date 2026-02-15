@@ -170,3 +170,15 @@ Recommended first test tonight:
 
 - Added an **Auto Generator (3-week)** tab where you can set patient count, add scheduling conditions, and auto-generate a 3-week weekday schedule with bottleneck warnings when constraints cannot be met.
 - Renamed Re-jigger to **Auto reconfigure** and added **Undo Auto reconfigure**.
+- Auto Generator now includes a requirements builder for 3-week scheduling with hard/soft constraints, week selection, patient scope, multi-window time rules, and bottleneck reporting.
+- Auto reconfigure existing schedule now runs a minimal-disruption pass and reports unchanged/moved/added/removed appointments.
+- Requirements, provider profiles (availability templates/exceptions), and last generated 3-week schedules persist under `data/` for restart-safe planning.
+
+### How to generate a 3-week schedule
+1. Open **Auto Generator (3-week)** tab.
+2. Select patient count and start date (Monday recommended).
+3. Build one or more requirements (discipline/provider/room/mode/duration/weekdays/weeks/windows/hard-soft).
+4. Click **Generate 3-week Schedule**.
+5. Use the report panel to review bottlenecks if generation fails.
+6. If requirements change, click **Auto reconfigure existing schedule** to preserve as many existing appointments as possible.
+7. Use **Undo Auto reconfigure** from the manual tab to roll back one step.
