@@ -409,8 +409,10 @@ class SchedulerDesktopApp:
 
         notebook = ttk.Notebook(main)
         notebook.pack(fill=tk.BOTH, expand=True, pady=(8, 8))
+        self.main_notebook = notebook
 
         manual_tab = ttk.Frame(notebook)
+        self.manual_tab = manual_tab
         notebook.add(manual_tab, text="Manual Scheduler")
 
         auto_tab = ttk.Frame(notebook)
@@ -498,9 +500,11 @@ class SchedulerDesktopApp:
         self.auto_scope_var = self.tk.StringVar(value="all")
         self.auto_subset_patients_var = self.tk.StringVar(value="")
         self.auto_duration_var = self.tk.StringVar(value="60")
-        self.auto_weekday_a_var = self.tk.StringVar(value="Monday")
-        self.auto_weekday_b_var = self.tk.StringVar(value="Wednesday")
-        self.auto_weekday_c_var = self.tk.StringVar(value="(none)")
+        self.auto_weekday_1_var = self.tk.StringVar(value="Monday")
+        self.auto_weekday_2_var = self.tk.StringVar(value="Wednesday")
+        self.auto_weekday_3_var = self.tk.StringVar(value="(none)")
+        self.auto_weekday_4_var = self.tk.StringVar(value="(none)")
+        self.auto_weekday_5_var = self.tk.StringVar(value="(none)")
         self.auto_week_1_var = self.tk.BooleanVar(value=True)
         self.auto_week_2_var = self.tk.BooleanVar(value=True)
         self.auto_week_3_var = self.tk.BooleanVar(value=True)
@@ -547,34 +551,38 @@ class SchedulerDesktopApp:
         ttk.Label(cond, text="Subset/Single IDs (comma)").grid(row=2, column=1, columnspan=2, sticky="w", pady=(6, 0))
         ttk.Entry(cond, textvariable=self.auto_subset_patients_var, width=28).grid(row=3, column=1, columnspan=2, padx=2, sticky="w")
 
-        ttk.Label(cond, text="Weekday A").grid(row=2, column=3, sticky="w", pady=(6, 0))
-        ttk.Combobox(cond, textvariable=self.auto_weekday_a_var, values=weekdays, state="readonly", width=12).grid(row=3, column=3, padx=2)
-        ttk.Label(cond, text="Weekday B").grid(row=2, column=4, sticky="w", pady=(6, 0))
-        ttk.Combobox(cond, textvariable=self.auto_weekday_b_var, values=["(none)"] + weekdays, state="readonly", width=12).grid(row=3, column=4, padx=2)
-        ttk.Label(cond, text="Weekday C").grid(row=2, column=5, sticky="w", pady=(6, 0))
-        ttk.Combobox(cond, textvariable=self.auto_weekday_c_var, values=["(none)"] + weekdays, state="readonly", width=12).grid(row=3, column=5, padx=2)
+        ttk.Label(cond, text="Weekday 1").grid(row=2, column=3, sticky="w", pady=(6, 0))
+        ttk.Combobox(cond, textvariable=self.auto_weekday_1_var, values=weekdays, state="readonly", width=12).grid(row=3, column=3, padx=2)
+        ttk.Label(cond, text="Weekday 2").grid(row=2, column=4, sticky="w", pady=(6, 0))
+        ttk.Combobox(cond, textvariable=self.auto_weekday_2_var, values=["(none)"] + weekdays, state="readonly", width=12).grid(row=3, column=4, padx=2)
+        ttk.Label(cond, text="Weekday 3").grid(row=2, column=5, sticky="w", pady=(6, 0))
+        ttk.Combobox(cond, textvariable=self.auto_weekday_3_var, values=["(none)"] + weekdays, state="readonly", width=12).grid(row=3, column=5, padx=2)
+        ttk.Label(cond, text="Weekday 4").grid(row=2, column=6, sticky="w", pady=(6, 0))
+        ttk.Combobox(cond, textvariable=self.auto_weekday_4_var, values=["(none)"] + weekdays, state="readonly", width=12).grid(row=3, column=6, padx=2)
+        ttk.Label(cond, text="Weekday 5").grid(row=2, column=7, sticky="w", pady=(6, 0))
+        ttk.Combobox(cond, textvariable=self.auto_weekday_5_var, values=["(none)"] + weekdays, state="readonly", width=12).grid(row=3, column=7, padx=2)
 
         week_frame = ttk.Frame(cond)
-        week_frame.grid(row=3, column=6, columnspan=2, sticky="w")
+        week_frame.grid(row=4, column=6, columnspan=2, sticky="w")
         ttk.Checkbutton(week_frame, text="W1", variable=self.auto_week_1_var).pack(side="left")
         ttk.Checkbutton(week_frame, text="W2", variable=self.auto_week_2_var).pack(side="left")
         ttk.Checkbutton(week_frame, text="W3", variable=self.auto_week_3_var).pack(side="left")
 
-        ttk.Label(cond, text="Window Start").grid(row=4, column=0, sticky="w", pady=(6, 0))
-        ttk.Combobox(cond, textvariable=self.auto_window_start_var, values=time_choices, state="readonly", width=10).grid(row=5, column=0, padx=2)
-        ttk.Label(cond, text="Window End").grid(row=4, column=1, sticky="w", pady=(6, 0))
-        ttk.Combobox(cond, textvariable=self.auto_window_end_var, values=time_choices, state="readonly", width=10).grid(row=5, column=1, padx=2)
-        ttk.Button(cond, text="Add Window", command=lambda: self._safe_action(self.add_requirement_window)).grid(row=5, column=2, padx=6)
+        ttk.Label(cond, text="Window Start").grid(row=5, column=0, sticky="w", pady=(6, 0))
+        ttk.Combobox(cond, textvariable=self.auto_window_start_var, values=time_choices, state="readonly", width=10).grid(row=6, column=0, padx=2)
+        ttk.Label(cond, text="Window End").grid(row=5, column=1, sticky="w", pady=(6, 0))
+        ttk.Combobox(cond, textvariable=self.auto_window_end_var, values=time_choices, state="readonly", width=10).grid(row=6, column=1, padx=2)
+        ttk.Button(cond, text="Add Window", command=lambda: self._safe_action(self.add_requirement_window)).grid(row=6, column=2, padx=6)
 
-        ttk.Label(cond, text="Windows").grid(row=4, column=3, sticky="w", pady=(6, 0))
-        ttk.Entry(cond, textvariable=self.auto_windows_var, width=36).grid(row=5, column=3, columnspan=2, padx=2, sticky="w")
+        ttk.Label(cond, text="Windows").grid(row=5, column=3, sticky="w", pady=(6, 0))
+        ttk.Entry(cond, textvariable=self.auto_windows_var, width=36).grid(row=6, column=3, columnspan=2, padx=2, sticky="w")
 
-        ttk.Checkbutton(cond, text="Hard constraint", variable=self.auto_hard_var).grid(row=5, column=5, sticky="w")
-        ttk.Label(cond, text="Priority").grid(row=4, column=6, sticky="w", pady=(6, 0))
-        ttk.Combobox(cond, textvariable=self.auto_priority_var, values=["25", "50", "75", "100"], state="readonly", width=8).grid(row=5, column=6, padx=2)
+        ttk.Checkbutton(cond, text="Hard constraint", variable=self.auto_hard_var).grid(row=6, column=5, sticky="w")
+        ttk.Label(cond, text="Priority").grid(row=5, column=6, sticky="w", pady=(6, 0))
+        ttk.Combobox(cond, textvariable=self.auto_priority_var, values=["25", "50", "75", "100"], state="readonly", width=8).grid(row=6, column=6, padx=2)
 
         action_row = ttk.Frame(cond)
-        action_row.grid(row=6, column=0, columnspan=7, sticky="w", pady=(8, 0))
+        action_row.grid(row=7, column=0, columnspan=8, sticky="w", pady=(8, 0))
         ttk.Button(action_row, text="Add Requirement", command=lambda: self._safe_action(self.add_auto_condition)).pack(side="left", padx=4)
         ttk.Button(action_row, text="Remove Selected Requirement", command=lambda: self._safe_action(self.remove_selected_condition)).pack(side="left", padx=4)
         ttk.Button(action_row, text="Clear Requirements", command=lambda: self._safe_action(self.clear_auto_conditions)).pack(side="left", padx=4)
@@ -1175,11 +1183,16 @@ class SchedulerDesktopApp:
     def add_auto_condition(self) -> None:
         weekday_map = {"Monday": 0, "Tuesday": 1, "Wednesday": 2, "Thursday": 3, "Friday": 4}
 
-        weekdays = [weekday_map[self.auto_weekday_a_var.get()]]
-        if self.auto_weekday_b_var.get() not in ("", "(none)"):
-            weekdays.append(weekday_map[self.auto_weekday_b_var.get()])
-        if self.auto_weekday_c_var.get() not in ("", "(none)"):
-            weekdays.append(weekday_map[self.auto_weekday_c_var.get()])
+        weekday_selections = [
+            self.auto_weekday_1_var.get(),
+            self.auto_weekday_2_var.get(),
+            self.auto_weekday_3_var.get(),
+            self.auto_weekday_4_var.get(),
+            self.auto_weekday_5_var.get(),
+        ]
+        weekdays = [weekday_map[w] for w in weekday_selections if w not in ("", "(none)")]
+        if not weekdays:
+            raise ValueError("Select at least one weekday")
 
         scope = self.auto_scope_var.get().strip()
         subset_ids = self._selected_patient_scope_ids()
@@ -1298,6 +1311,8 @@ class SchedulerDesktopApp:
         self._render_patient_grid(profile, self.last_result)
         self._refresh_profile_preview()
         save_last_generated_schedule(result)
+        if hasattr(self, "main_notebook") and hasattr(self, "manual_tab"):
+            self.main_notebook.select(self.manual_tab)
 
     def generate_auto_schedule(self) -> None:
         if not self.auto_conditions:

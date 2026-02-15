@@ -197,3 +197,6 @@ Recommended first test tonight:
 - You can now right-click an appointment block in the grid to select it, then click **Delete Appointment** to remove it.
 - Manual Scheduler auto-reconfigure controls were removed; reconfiguration remains in the Auto Generator area.
 - The manual grid now shows appointments across planning dates in one horizontal timeline (date + patient columns), so you can scroll left/right across days.
+
+- Requirements Builder now labels recurrence selectors as **Weekday 1..5** (with `None` available for Weekday 2-5).
+- After Auto Generator runs, the produced schedule is loaded into Manual Scheduler so you can review and edit it manually.
