@@ -1,0 +1,167 @@
+# Therapy Scheduler MVP (Beginner-Friendly)
+
+This repo is a **Windows-first proof of concept** with a click-through GUI.
+
+## Are we stuck?
+No. The project is operational as a local proof of concept right now. If you have zero coding background, use the exact beginner steps below.
+
+## 10-minute beginner setup (no coding knowledge needed)
+
+### Step 0: Download this project folder
+- If someone sent you a zip, unzip it.
+- Keep the folder somewhere easy (for example: `Desktop\Thriving`).
+
+### Step 1: Install Python (one-time)
+1. Go to <https://www.python.org/downloads/windows/>.
+2. Install Python 3.11+.
+3. **Important:** during install, check **"Add python.exe to PATH"**.
+
+### Step 2: Open the project folder
+- Open File Explorer and go into the project folder.
+- You should see files like:
+  - `setup_and_launch_windows.bat`
+  - `launch_gui_windows.bat`
+  - `run_healthcheck_windows.bat`
+
+### Step 3: Double-click `setup_and_launch_windows.bat`
+This does two things:
+1. Runs health check.
+2. Launches the GUI.
+
+If Python is missing, it gives a readable error and tells you exactly what to install.
+
+### Step 4: In the GUI, click buttons in this order
+1. **Run Health Check**
+2. **Save Sample Profile**
+3. **Load Profile JSON**
+4. **Generate From Loaded Profile**
+5. **Export Generated Schedule**
+
+That is the current no-code workflow.
+
+---
+
+## What this is right now
+This is not a finished production app yet, but it includes:
+- Scheduling engine (constraints + timeline labels).
+- Desktop GUI (Tkinter) for non-coders.
+- Local profile save/load from JSON.
+- Health check and safer error popups.
+- Optional local API and optional Windows EXE packaging.
+
+---
+
+## Profile JSON support
+Profiles are local JSON files containing:
+- providers
+- patients
+- rooms
+- requests
+- day window/date/weekday
+
+So you can iterate without touching Python code:
+1. Save sample profile from GUI.
+2. Edit JSON in Notepad/VS Code.
+3. Load profile in GUI.
+4. Regenerate schedule.
+
+---
+
+## Quick troubleshooting (plain English)
+- **"Python launcher not found"**
+  - Install Python 3.11+ and ensure "Add python.exe to PATH" is checked.
+- **GUI opens then errors**
+  - Run `run_healthcheck_windows.bat` first and follow messages.
+- **I exported but can't find my file**
+  - Re-run export and pick a known folder like Desktop.
+- **I want to start over**
+  - Delete your exported JSON files and re-run using the sample profile.
+
+---
+
+## Safety notes ("won't break my computer")
+- Standard Python only (no admin rights required for normal use).
+- No registry editing.
+- No system services installed.
+- Files are local unless you manually share them.
+- Easiest rollback: delete this project folder.
+
+---
+
+## CLI commands (optional)
+```bat
+python -m app.health_check
+python -m app.windows_program health
+python -m app.windows_program gui
+python -m app.windows_program demo
+python -m app.windows_program export --out output\sample_schedule.json
+python -m app.windows_program api --host 127.0.0.1 --port 8080
+```
+
+Helper launchers:
+- `setup_and_launch_windows.bat` (best first run)
+- `run_healthcheck_windows.bat`
+- `launch_gui_windows.bat`
+- `run_demo_windows.bat`
+- `export_schedule_windows.bat`
+- `start_api_windows.bat`
+
+---
+
+## Build a single Windows executable (optional)
+If you want one-file sharing for non-technical users:
+1. Open PowerShell in repo root.
+2. Install PyInstaller:
+   ```powershell
+   python -m pip install pyinstaller
+   ```
+3. Build EXE:
+   ```powershell
+   .\installer\windows\build_exe.ps1
+   ```
+4. Find output at:
+   - `dist\TherapySchedulerPOC.exe`
+
+More detail: `installer/windows/README.md`.
+
+---
+
+## Honest status
+Operational as a beginner-friendly Windows POC with GUI + JSON profiles.
+Next major step for layperson use is richer form-based data entry (instead of editing JSON directly) and persistent storage.
+
+
+## New tonight: form-based editing + persistence
+- You can now add **providers, patients, rooms, and requests** directly in the GUI using form fields (no manual JSON required for basic use).
+- The app now auto-saves the most recent working profile to `data/last_profile.json` and restores it on next launch.
+- The most recent generated schedule is auto-saved to `data/last_schedule.json`.
+
+Recommended first test tonight:
+1. Double-click `setup_and_launch_windows.bat`.
+2. Click **New Blank Profile**.
+3. Use form sections to add at least:
+   - 1 provider
+   - 1 patient
+   - 1 room
+   - 1 request
+4. Click **Generate**.
+5. Click **Export**.
+6. Close and reopen GUI to verify your last profile is restored.
+
+## Safety guardrails added (doom-loop prevention)
+- Scheduling now enforces practical upper limits on request/provider/patient/room counts in this MVP.
+- Candidate explosion is capped per request with a clear error telling you to narrow windows.
+- Backtracking search has a maximum-state guard to prevent runaway solve attempts.
+- Payload validation now catches missing keys and invalid patient references before scheduling.
+
+
+## Visual update
+- The GUI now renders a color-coded patient schedule grid (time down left from 7:30 AM to 6:00 PM, patient columns across top).
+- Provider and request discipline selection now uses dropdown menus with the full requested discipline list.
+- The profile panel now shows a cleaner summary instead of raw JSON to reduce under-the-hood noise.
+
+- Time entry fields in the GUI now accept HHMM military-time input (examples: `0730`, `1100`, `1600`) and convert automatically to scheduler minutes.
+
+- Appointment entry is now a single **Add Appointment** line with dropdowns for patient, provider, room, appointment type, begin time, and end time, and the schedule grid refreshes immediately after each add (no Generate click needed for visualization).
+
+- Rooms are now a fixed predefined list shown only in Add Appointment, and provider selection is from a built-in provider-name catalog with Add New Provider / Remove Provider buttons that persist permanently.
