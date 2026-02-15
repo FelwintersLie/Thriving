@@ -1,6 +1,13 @@
 import unittest
 
-from app.windows_gui import DISCIPLINES, build_patient_grid_data, parse_time_input, summarize_schedule
+from app.windows_gui import (
+    DISCIPLINES,
+    build_live_result_from_profile,
+    build_patient_grid_data,
+    military_time_choices,
+    parse_time_input,
+    summarize_schedule,
+)
 
 
 class WindowsGuiHelperTests(unittest.TestCase):
@@ -66,6 +73,31 @@ class WindowsGuiHelperTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             parse_time_input("1661")
+
+
+    def test_build_live_result_from_profile_uses_provider_room_and_times(self):
+        profile = {
+            "requests": [
+                {
+                    "id": "appt_1",
+                    "discipline": "Physical Therapy",
+                    "mode": "individual",
+                    "provider_id": "prov_1",
+                    "room_id": "room_1",
+                    "preferred_window": {"start_minute": 450, "end_minute": 480},
+                }
+            ]
+        }
+
+        live = build_live_result_from_profile(profile)
+        self.assertIn("appt_1", live["assignments"])
+        self.assertEqual(live["assignments"]["appt_1"]["provider_id"], "prov_1")
+        self.assertEqual(live["assignments"]["appt_1"]["room_id"], "room_1")
+
+    def test_military_time_choices_include_expected_values(self):
+        values = military_time_choices()
+        self.assertIn("0730", values)
+        self.assertIn("1600", values)
 
 
 if __name__ == "__main__":

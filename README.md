@@ -161,3 +161,5 @@ Recommended first test tonight:
 - The profile panel now shows a cleaner summary instead of raw JSON to reduce under-the-hood noise.
 
 - Time entry fields in the GUI now accept HHMM military-time input (examples: `0730`, `1100`, `1600`) and convert automatically to scheduler minutes.
+
+- Appointment entry is now a single **Add Appointment** line with dropdowns for patient, provider, room, appointment type, begin time, and end time, and the schedule grid refreshes immediately after each add (no Generate click needed for visualization).

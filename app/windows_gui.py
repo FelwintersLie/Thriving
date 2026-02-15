@@ -131,6 +131,42 @@ def parse_time_input(raw: str) -> int:
     return hour * 60 + minute
 
 
+def military_time_choices(start_minute: int = GRID_START_MINUTE, end_minute: int = GRID_END_MINUTE) -> List[str]:
+    values: List[str] = []
+    for minute in range(start_minute, end_minute + GRID_SLOT_MINUTES, GRID_SLOT_MINUTES):
+        hour = minute // 60
+        mins = minute % 60
+        values.append(f"{hour:02d}{mins:02d}")
+    return values
+
+
+def is_overlap(start_a: int, end_a: int, start_b: int, end_b: int) -> bool:
+    return not (end_a <= start_b or start_a >= end_b)
+
+
+def build_live_result_from_profile(profile: Dict[str, Any]) -> Dict[str, Any]:
+    assignments: Dict[str, Dict[str, Any]] = {}
+    for req in profile.get("requests", []):
+        req_id = req.get("id")
+        window = req.get("preferred_window") or {}
+        start = int(window.get("start_minute", GRID_START_MINUTE))
+        end = int(window.get("end_minute", start + GRID_SLOT_MINUTES))
+        if not req_id:
+            continue
+
+        assignments[req_id] = {
+            "request_id": req_id,
+            "provider_id": req.get("provider_id", "unassigned_provider"),
+            "room_id": req.get("room_id", "unassigned_room"),
+            "start_minute": start,
+            "end_minute": end,
+            "label": req.get("label") or req.get("discipline", "Session"),
+            "mode": req.get("mode", "individual"),
+        }
+
+    return {"assignments": assignments, "room_timeline": {}}
+
+
 def build_patient_grid_data(
     profile: Dict[str, Any],
     result: Dict[str, Any],
@@ -337,33 +373,43 @@ class SchedulerDesktopApp:
         self._labeled_entry(room_frame, 3, "Allowed Disciplines (csv)", self.room_disciplines_var)
         ttk.Button(room_frame, text="Add Room", command=lambda: self._safe_action(self.add_room)).grid(row=0, column=4, rowspan=2, padx=4)
 
-        req_frame = ttk.Labelframe(parent, text="Add Session Request", padding=6)
+        req_frame = ttk.Labelframe(parent, text="Add Appointment", padding=6)
         req_frame.pack(fill="x")
-        self.req_id_var = self.tk.StringVar()
-        self.req_patient_ids_var = self.tk.StringVar()
-        self.req_duration_var = self.tk.StringVar(value="30")
-        self.req_mode_var = self.tk.StringVar(value="individual")
-        self.req_pref_start_var = self.tk.StringVar(value="0730")
-        self.req_pref_end_var = self.tk.StringVar(value="1800")
-        self.req_label_var = self.tk.StringVar()
-        self.req_discipline_var = self.tk.StringVar(value=DISCIPLINES[1])
 
-        self._labeled_entry(req_frame, 0, "ID", self.req_id_var)
-        self._labeled_entry(req_frame, 1, "Patient IDs (csv)", self.req_patient_ids_var)
-        self.ttk.Label(req_frame, text="Discipline").grid(row=0, column=2, sticky="w")
-        self.ttk.Combobox(
-            req_frame,
-            textvariable=self.req_discipline_var,
-            values=DISCIPLINES,
-            state="readonly",
-            width=24,
-        ).grid(row=1, column=2, padx=2)
-        self._labeled_entry(req_frame, 3, "Duration", self.req_duration_var)
-        self._labeled_entry(req_frame, 4, "Mode", self.req_mode_var)
-        self._labeled_entry(req_frame, 5, "Preferred Start (HHMM)", self.req_pref_start_var)
-        self._labeled_entry(req_frame, 6, "Preferred End (HHMM)", self.req_pref_end_var)
-        self._labeled_entry(req_frame, 7, "Label", self.req_label_var)
-        ttk.Button(req_frame, text="Add Request", command=lambda: self._safe_action(self.add_request)).grid(row=0, column=8, rowspan=2, padx=4)
+        times = military_time_choices()
+        self.appt_patient_var = self.tk.StringVar(value="")
+        self.appt_provider_var = self.tk.StringVar(value="")
+        self.appt_room_var = self.tk.StringVar(value="")
+        self.appt_mode_var = self.tk.StringVar(value="individual")
+        self.appt_discipline_var = self.tk.StringVar(value=DISCIPLINES[1])
+        self.appt_start_var = self.tk.StringVar(value="0730")
+        self.appt_end_var = self.tk.StringVar(value="0800")
+
+        self.ttk.Label(req_frame, text="Patient ID").grid(row=0, column=0, sticky="w")
+        self.appt_patient_combo = self.ttk.Combobox(req_frame, textvariable=self.appt_patient_var, values=[], state="readonly", width=16)
+        self.appt_patient_combo.grid(row=1, column=0, padx=2)
+
+        self.ttk.Label(req_frame, text="Provider ID").grid(row=0, column=1, sticky="w")
+        self.appt_provider_combo = self.ttk.Combobox(req_frame, textvariable=self.appt_provider_var, values=[], state="readonly", width=16)
+        self.appt_provider_combo.grid(row=1, column=1, padx=2)
+
+        self.ttk.Label(req_frame, text="Room").grid(row=0, column=2, sticky="w")
+        self.appt_room_combo = self.ttk.Combobox(req_frame, textvariable=self.appt_room_var, values=[], state="readonly", width=16)
+        self.appt_room_combo.grid(row=1, column=2, padx=2)
+
+        self.ttk.Label(req_frame, text="Appointment Type").grid(row=0, column=3, sticky="w")
+        self.ttk.Combobox(req_frame, textvariable=self.appt_mode_var, values=["individual", "group"], state="readonly", width=12).grid(row=1, column=3, padx=2)
+
+        self.ttk.Label(req_frame, text="Discipline").grid(row=0, column=4, sticky="w")
+        self.ttk.Combobox(req_frame, textvariable=self.appt_discipline_var, values=DISCIPLINES, state="readonly", width=22).grid(row=1, column=4, padx=2)
+
+        self.ttk.Label(req_frame, text="Begin (HHMM)").grid(row=0, column=5, sticky="w")
+        self.ttk.Combobox(req_frame, textvariable=self.appt_start_var, values=times, state="readonly", width=10).grid(row=1, column=5, padx=2)
+
+        self.ttk.Label(req_frame, text="End (HHMM)").grid(row=0, column=6, sticky="w")
+        self.ttk.Combobox(req_frame, textvariable=self.appt_end_var, values=times, state="readonly", width=10).grid(row=1, column=6, padx=2)
+
+        ttk.Button(req_frame, text="Add Appointment", command=lambda: self._safe_action(self.add_appointment)).grid(row=0, column=7, rowspan=2, padx=4)
 
     def _labeled_entry(self, frame, column: int, label: str, var) -> None:
         self.ttk.Label(frame, text=label).grid(row=0, column=column, sticky="w")
@@ -391,6 +437,25 @@ class SchedulerDesktopApp:
         if self.loaded_profile:
             save_last_profile(self.loaded_profile, str(self.loaded_profile_path) if self.loaded_profile_path else None)
 
+    def _refresh_appointment_dropdowns(self) -> None:
+        if not self.loaded_profile or not hasattr(self, "appt_patient_combo"):
+            return
+
+        patients = [p.get("id", "") for p in self.loaded_profile.get("patients", []) if p.get("id")]
+        providers = [p.get("id", "") for p in self.loaded_profile.get("providers", []) if p.get("id")]
+        rooms = [r.get("id", "") for r in self.loaded_profile.get("rooms", []) if r.get("id")]
+
+        self.appt_patient_combo["values"] = patients
+        self.appt_provider_combo["values"] = providers
+        self.appt_room_combo["values"] = rooms
+
+        if patients and self.appt_patient_var.get() not in patients:
+            self.appt_patient_var.set(patients[0])
+        if providers and self.appt_provider_var.get() not in providers:
+            self.appt_provider_var.set(providers[0])
+        if rooms and self.appt_room_var.get() not in rooms:
+            self.appt_room_var.set(rooms[0])
+
     def _refresh_profile_preview(self) -> None:
         if not self.loaded_profile:
             return
@@ -410,6 +475,7 @@ class SchedulerDesktopApp:
             lines.append(f"- {p.get('id')} ({p.get('name', 'No name')})")
 
         self._set_text(self.summary_text, "\n".join(lines))
+        self._refresh_appointment_dropdowns()
         self._autosave_profile()
 
     def _render_patient_grid(self, profile: Dict[str, Any], result: Dict[str, Any]) -> None:
@@ -593,27 +659,66 @@ class SchedulerDesktopApp:
         self.status_var.set(f"Status: Added room {room_id}")
         self._refresh_profile_preview()
 
-    def add_request(self) -> None:
+    def add_appointment(self) -> None:
         profile = self._require_profile()
-        req_id = self.req_id_var.get().strip()
-        if not req_id:
-            raise ValueError("Request ID is required")
+
+        patient_id = self.appt_patient_var.get().strip()
+        provider_id = self.appt_provider_var.get().strip()
+        room_id = self.appt_room_var.get().strip()
+        mode = self.appt_mode_var.get().strip().lower()
+        discipline = self.appt_discipline_var.get().strip()
+
+        if not patient_id or not provider_id or not room_id:
+            raise ValueError("Patient ID, Provider ID, and Room are required for Add Appointment")
+
+        start_minute = parse_time_input(self.appt_start_var.get())
+        end_minute = parse_time_input(self.appt_end_var.get())
+        if end_minute <= start_minute:
+            raise ValueError("Appointment end time must be after begin time")
+
+        for existing in profile.get("requests", []):
+            ex_window = existing.get("preferred_window") or {}
+            ex_start = int(ex_window.get("start_minute", 0))
+            ex_end = int(ex_window.get("end_minute", 0))
+            if not is_overlap(start_minute, end_minute, ex_start, ex_end):
+                continue
+
+            ex_mode = str(existing.get("mode", "individual")).lower()
+            ex_room = existing.get("room_id")
+            ex_provider = existing.get("provider_id")
+            ex_patients = existing.get("patient_ids", [])
+
+            if mode == "individual" or ex_mode == "individual":
+                if ex_room == room_id:
+                    raise ValueError("Conflict: individual appointment cannot overlap in the same room")
+                if ex_provider == provider_id:
+                    raise ValueError("Conflict: individual appointment cannot overlap with the same provider")
+                if patient_id in ex_patients:
+                    raise ValueError("Conflict: patient already has an overlapping appointment")
+
+        req_id = f"appt_{len(profile.get('requests', [])) + 1}"
         request = {
             "id": req_id,
-            "patient_ids": _parse_csv(self.req_patient_ids_var.get()),
-            "discipline": self.req_discipline_var.get(),
-            "duration_minutes": int(self.req_duration_var.get()),
-            "mode": self.req_mode_var.get().strip().lower(),
+            "patient_ids": [patient_id],
+            "discipline": discipline,
+            "duration_minutes": end_minute - start_minute,
+            "mode": mode,
             "date_key": profile["date_key"],
             "preferred_window": {
-                "start_minute": parse_time_input(self.req_pref_start_var.get()),
-                "end_minute": parse_time_input(self.req_pref_end_var.get()),
+                "start_minute": start_minute,
+                "end_minute": end_minute,
             },
             "group_key": None,
-            "label": self.req_label_var.get().strip() or req_id,
+            "label": f"{discipline} ({patient_id})",
+            "provider_id": provider_id,
+            "room_id": room_id,
         }
         profile["requests"].append(request)
-        self.status_var.set(f"Status: Added request {req_id}")
+        self.status_var.set(f"Status: Added appointment {req_id}")
+
+        live_result = build_live_result_from_profile(profile)
+        self.last_result = live_result
+        self._render_patient_grid(profile, live_result)
         self._refresh_profile_preview()
 
     def save_current_profile(self) -> None:
