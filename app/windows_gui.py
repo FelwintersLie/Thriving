@@ -367,6 +367,8 @@ class SchedulerDesktopApp:
         self.auto_reconfigure_history: List[List[Dict[str, Any]]] = []
         self.loaded_profile: Dict[str, Any] | None = load_last_profile()
         self.loaded_profile_path: Path | None = None
+        self.manual_undo_stack: List[Dict[str, Any]] = []
+        self.selected_request_id: str | None = None
 
         self._build_layout()
 
@@ -442,6 +444,7 @@ class SchedulerDesktopApp:
         xscroll = ttk.Scrollbar(grid_container, orient=tk.HORIZONTAL, command=self.grid_canvas.xview)
         xscroll.grid(row=2, column=0, sticky="ew")
         self.grid_canvas.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
+        self.grid_canvas.bind("<Button-3>", self._on_grid_right_click)
 
         grid_container.rowconfigure(0, weight=1)
         grid_container.columnconfigure(0, weight=1)
@@ -630,12 +633,7 @@ class SchedulerDesktopApp:
         self.ttk.Label(cal, text="Day End (HHMM)").grid(row=0, column=4, sticky="w")
         self.ttk.Combobox(cal, textvariable=self.day_end_var, values=time_choices, state="readonly", width=10).grid(row=1, column=4, padx=2)
 
-        self.view_date_var = self.tk.StringVar(value=date_to_key(current))
-        self.ttk.Label(cal, text="View Date").grid(row=0, column=5, sticky="w")
-        self.view_date_combo = self.ttk.Combobox(cal, textvariable=self.view_date_var, values=[date_to_key(current)], state="readonly", width=14)
-        self.view_date_combo.grid(row=1, column=5, padx=2)
-
-        ttk.Button(cal, text="Apply Calendar Settings", command=lambda: self._safe_action(self.apply_calendar_settings)).grid(row=1, column=6, padx=6)
+        ttk.Button(cal, text="Apply Calendar Settings", command=lambda: self._safe_action(self.apply_calendar_settings)).grid(row=1, column=5, padx=6)
 
         provider_frame = ttk.Labelframe(parent, text="Provider List Management", padding=6)
         provider_frame.pack(fill="x", pady=(0, 6))
@@ -687,31 +685,8 @@ class SchedulerDesktopApp:
         self.ttk.Combobox(appt, textvariable=self.appt_end_var, values=time_choices, state="readonly", width=10).grid(row=1, column=7, padx=2)
 
         ttk.Button(appt, text="Add Appointment", command=lambda: self._safe_action(self.add_appointment)).grid(row=1, column=8, padx=6)
-
-        shift = ttk.Labelframe(parent, text="Auto reconfigure", padding=6)
-        shift.pack(fill="x")
-        self.shift_patient_var = self.tk.StringVar(value="All")
-        self.shift_discipline_var = self.tk.StringVar(value=DISCIPLINES[1])
-        self.shift_from_date_var = self.tk.StringVar(value=date_to_key(current))
-        self.shift_to_date_var = self.tk.StringVar(value=date_to_key(current))
-
-        self.ttk.Label(shift, text="Patient").grid(row=0, column=0, sticky="w")
-        self.shift_patient_combo = self.ttk.Combobox(shift, textvariable=self.shift_patient_var, values=["All"] + PATIENT_ID_CHOICES, state="readonly", width=12)
-        self.shift_patient_combo.grid(row=1, column=0, padx=2)
-
-        self.ttk.Label(shift, text="Discipline").grid(row=0, column=1, sticky="w")
-        self.ttk.Combobox(shift, textvariable=self.shift_discipline_var, values=DISCIPLINES, state="readonly", width=22).grid(row=1, column=1, padx=2)
-
-        self.ttk.Label(shift, text="From Date").grid(row=0, column=2, sticky="w")
-        self.shift_from_combo = self.ttk.Combobox(shift, textvariable=self.shift_from_date_var, values=[date_to_key(current)], state="readonly", width=14)
-        self.shift_from_combo.grid(row=1, column=2, padx=2)
-
-        self.ttk.Label(shift, text="To Date").grid(row=0, column=3, sticky="w")
-        self.shift_to_combo = self.ttk.Combobox(shift, textvariable=self.shift_to_date_var, values=[date_to_key(current)], state="readonly", width=14)
-        self.shift_to_combo.grid(row=1, column=3, padx=2)
-
-        ttk.Button(shift, text="Apply Auto reconfigure", command=lambda: self._safe_action(self.apply_auto_reconfigure)).grid(row=1, column=4, padx=6)
-        ttk.Button(shift, text="Undo Auto reconfigure", command=lambda: self._safe_action(self.undo_auto_reconfigure)).grid(row=1, column=5, padx=6)
+        ttk.Button(appt, text="Delete Appointment", command=lambda: self._safe_action(self.delete_selected_appointment)).grid(row=1, column=9, padx=6)
+        ttk.Button(appt, text="Undo Manual Action", command=lambda: self._safe_action(self.undo_manual_action)).grid(row=1, column=10, padx=6)
 
     def _safe_action(self, fn) -> None:
         try:
@@ -719,6 +694,34 @@ class SchedulerDesktopApp:
         except Exception as exc:
             self.status_var.set("Status: Error")
             self.messagebox.showerror("Action failed", str(exc))
+
+
+    def _push_manual_undo_snapshot(self, action_label: str) -> None:
+        snapshot = {
+            "action": action_label,
+            "profile": copy.deepcopy(self.loaded_profile) if self.loaded_profile else None,
+            "provider_catalog": copy.deepcopy(self.provider_catalog),
+            "provider_profiles": copy.deepcopy(self.provider_profiles),
+            "last_result": copy.deepcopy(self.last_result),
+        }
+        self.manual_undo_stack.append(snapshot)
+        if len(self.manual_undo_stack) > 10:
+            self.manual_undo_stack = self.manual_undo_stack[-10:]
+
+    def undo_manual_action(self) -> None:
+        if not self.manual_undo_stack:
+            raise ValueError("No manual actions to undo")
+        snapshot = self.manual_undo_stack.pop()
+        self.loaded_profile = snapshot.get("profile")
+        self.provider_catalog = snapshot.get("provider_catalog", self.provider_catalog)
+        self.provider_profiles = snapshot.get("provider_profiles", self.provider_profiles)
+        self.last_result = snapshot.get("last_result")
+        self.selected_request_id = None
+        self._refresh_provider_dropdowns()
+        self._refresh_profile_preview()
+        if self.loaded_profile and self.last_result:
+            self._render_patient_grid(self.loaded_profile, self.last_result)
+        self.status_var.set(f"Status: Undid manual action: {snapshot.get('action', 'unknown')}")
 
     def _set_text(self, widget, text: str) -> None:
         widget.configure(state=self.tk.NORMAL)
@@ -754,12 +757,9 @@ class SchedulerDesktopApp:
         dates = self.loaded_profile.get("planning_dates", [])
         if not dates:
             return
-        for combo in [self.view_date_combo, self.appt_date_combo, self.shift_from_combo, self.shift_to_combo]:
-            combo["values"] = dates
-
-        for var in [self.view_date_var, self.appt_date_var, self.shift_from_date_var, self.shift_to_date_var]:
-            if var.get() not in dates:
-                var.set(dates[0])
+        self.appt_date_combo["values"] = dates
+        if self.appt_date_var.get() not in dates:
+            self.appt_date_var.set(dates[0])
 
     def _refresh_provider_dropdowns(self) -> None:
         self.appt_provider_combo["values"] = self.provider_catalog
@@ -803,20 +803,24 @@ class SchedulerDesktopApp:
         canvas = self.grid_canvas
         canvas.delete("all")
         minutes = _grid_minutes()
-        view_date = self.view_date_var.get().strip()
 
         request_map = {r["id"]: r for r in profile.get("requests", []) if "id" in r}
         appointments = []
         patient_ids = set()
+        date_keys_in_use = set()
+
         for assignment in result.get("assignments", {}).values():
             req = request_map.get(assignment.get("request_id", ""), {})
-            if req.get("date_key") != view_date:
+            date_key = req.get("date_key") or assignment.get("date_key")
+            if not date_key:
                 continue
             pids = [str(pid) for pid in req.get("patient_ids", [])]
             if not pids:
                 continue
             appointments.append(
                 {
+                    "request_id": req.get("id") or assignment.get("request_id"),
+                    "date_key": date_key,
                     "start": int(assignment["start_minute"]),
                     "end": int(assignment["end_minute"]),
                     "discipline": req.get("discipline", "Other"),
@@ -826,36 +830,44 @@ class SchedulerDesktopApp:
                 }
             )
             patient_ids.update(pids)
+            date_keys_in_use.add(date_key)
+
+        planning_dates = profile.get("planning_dates", [])
+        ordered_dates = [d for d in planning_dates if d in date_keys_in_use] + sorted(date_keys_in_use.difference(planning_dates))
+        if not ordered_dates:
+            ordered_dates = planning_dates[:]
 
         patient_labels = sorted(patient_ids, key=lambda x: int(x) if x.isdigit() else x)
         if not patient_labels:
-            canvas.create_text(16, 20, anchor="w", text=f"No appointments on {view_date}.", fill="#003049", font=("Segoe UI", 11, "bold"))
+            canvas.create_text(16, 20, anchor="w", text="No appointments scheduled yet.", fill="#003049", font=("Segoe UI", 11, "bold"))
             return
 
-        time_col_w, header_h, row_h, patient_col_w = 85, 34, 22, 180
-        total_w = time_col_w + len(patient_labels) * patient_col_w
+        time_col_w, header_h, row_h, patient_col_w = 85, 42, 22, 180
+        col_pairs = [(d, p) for d in ordered_dates for p in patient_labels]
+        total_w = time_col_w + len(col_pairs) * patient_col_w
         total_h = header_h + len(minutes) * row_h
         canvas.config(scrollregion=(0, 0, total_w, total_h))
 
         canvas.create_rectangle(0, 0, time_col_w, header_h, fill="#0b4f6c", outline="#0b4f6c")
         canvas.create_text(time_col_w // 2, header_h // 2, text="Time", fill="white", font=("Segoe UI", 10, "bold"))
 
-        for idx, label in enumerate(patient_labels):
+        for idx, (date_key, pid) in enumerate(col_pairs):
             x0 = time_col_w + idx * patient_col_w
             x1 = x0 + patient_col_w
             canvas.create_rectangle(x0, 0, x1, header_h, fill="#1d3557", outline="#f1faee")
-            canvas.create_text((x0 + x1) // 2, header_h // 2, text=f"Patient {label}", fill="white", font=("Segoe UI", 9, "bold"))
+            canvas.create_text((x0 + x1) // 2, header_h // 2, text=f"{date_key}\nPatient {pid}", fill="white", font=("Segoe UI", 8, "bold"))
 
         for row_idx, minute in enumerate(minutes):
             y0 = header_h + row_idx * row_h
             y1 = y0 + row_h
             canvas.create_rectangle(0, y0, time_col_w, y1, fill="#f8f9fa" if row_idx % 2 == 0 else "#e9ecef", outline="#adb5bd")
             canvas.create_text(time_col_w // 2, (y0 + y1) // 2, text=_to_ampm(minute), fill="#1b263b", font=("Segoe UI", 8))
-            for col_idx in range(len(patient_labels)):
+            for col_idx in range(len(col_pairs)):
                 x0 = time_col_w + col_idx * patient_col_w
                 x1 = x0 + patient_col_w
                 canvas.create_rectangle(x0, y0, x1, y1, fill="#ffffff", outline="#dee2e6")
 
+        pair_index = {pair: idx for idx, pair in enumerate(col_pairs)}
         used_disciplines = set()
         for appt in appointments:
             start_idx = max(0, (appt["start"] - GRID_START_MINUTE) // GRID_SLOT_MINUTES)
@@ -863,21 +875,45 @@ class SchedulerDesktopApp:
             if end_idx <= start_idx:
                 continue
             for pid in appt["patients"]:
-                if pid not in patient_labels:
+                pair = (appt["date_key"], pid)
+                if pair not in pair_index:
                     continue
-                col_idx = patient_labels.index(pid)
+                col_idx = pair_index[pair]
                 x0 = time_col_w + col_idx * patient_col_w + 1
                 x1 = x0 + patient_col_w - 2
                 y0 = header_h + start_idx * row_h + 1
                 y1 = header_h + end_idx * row_h - 1
                 color = DISCIPLINE_COLORS.get(appt["discipline"], "#ffb3c1")
-                canvas.create_rectangle(x0, y0, x1, y1, fill=color, outline="#495057", width=2)
+                width = 3 if self.selected_request_id and appt["request_id"] == self.selected_request_id else 2
+                outline = "#d00000" if self.selected_request_id and appt["request_id"] == self.selected_request_id else "#495057"
+                tags = ("appointment", f"req:{appt['request_id']}")
+                canvas.create_rectangle(x0, y0, x1, y1, fill=color, outline=outline, width=width, tags=tags)
                 text = f"{appt['discipline']}\n{appt['room']}\n{appt['provider']}"
-                canvas.create_text((x0 + x1) // 2, (y0 + y1) // 2, text=text, fill="#1b263b", font=("Segoe UI", 8), justify="center")
+                canvas.create_text((x0 + x1) // 2, (y0 + y1) // 2, text=text, fill="#1b263b", font=("Segoe UI", 8), justify="center", tags=tags)
                 used_disciplines.add(appt["discipline"])
 
-        self.legend_var.set("Legend: " + " | ".join(sorted(used_disciplines)) if used_disciplines else "Legend: No assigned sessions")
+        self.legend_var.set(
+            "Legend: " + " | ".join(sorted(used_disciplines)) if used_disciplines else "Legend: No assigned sessions"
+        )
 
+    def _on_grid_right_click(self, event) -> None:
+        if not self.loaded_profile or not self.last_result:
+            return
+        canvas = self.grid_canvas
+        clicked = canvas.find_overlapping(canvas.canvasx(event.x), canvas.canvasy(event.y), canvas.canvasx(event.x), canvas.canvasy(event.y))
+        req_id = None
+        for item in reversed(clicked):
+            for tag in canvas.gettags(item):
+                if tag.startswith("req:"):
+                    req_id = tag.split(":", 1)[1]
+                    break
+            if req_id:
+                break
+        if not req_id:
+            return
+        self.selected_request_id = req_id
+        self.status_var.set(f"Status: Selected appointment {req_id}. Click Delete Appointment to remove it.")
+        self._render_patient_grid(self.loaded_profile, self.last_result)
     def _payload_for_date(self, date_key: str) -> Dict[str, Any]:
         profile = self._require_profile()
         day_dt = date.fromisoformat(date_key)
@@ -934,6 +970,8 @@ class SchedulerDesktopApp:
         }
         self._sync_profile_resources(self.loaded_profile)
         self.loaded_profile_path = None
+        self.manual_undo_stack = []
+        self.selected_request_id = None
         self.profile_var.set("Profile: unsaved")
         self.status_var.set("Status: Created blank profile")
         self._refresh_profile_preview()
@@ -948,6 +986,8 @@ class SchedulerDesktopApp:
             start = date.fromisoformat(self.loaded_profile.get("date_key", date_to_key(datetime.utcnow().date())))
             self.loaded_profile["planning_dates"] = planning_dates(start)
         self.loaded_profile_path = path
+        self.manual_undo_stack = []
+        self.selected_request_id = None
         self._sync_profile_resources(self.loaded_profile)
         self.profile_var.set(f"Profile: {path}")
         self.status_var.set("Status: Profile loaded")
@@ -955,6 +995,7 @@ class SchedulerDesktopApp:
 
     def apply_calendar_settings(self) -> None:
         profile = self._require_profile()
+        self._push_manual_undo_snapshot("Apply calendar settings")
         start_date = parse_date_parts(self.cal_year_var.get(), self.cal_month_var.get(), self.cal_day_var.get())
         start_minute = parse_time_input(self.day_start_var.get())
         end_minute = parse_time_input(self.day_end_var.get())
@@ -972,6 +1013,7 @@ class SchedulerDesktopApp:
 
     def add_new_provider(self) -> None:
         name = self.provider_new_var.get().strip()
+        self._push_manual_undo_snapshot("Add provider")
         if not name:
             raise ValueError("Enter a provider name to add")
         if name in self.provider_catalog:
@@ -988,6 +1030,7 @@ class SchedulerDesktopApp:
 
     def remove_provider(self) -> None:
         name = self.provider_selected_var.get().strip()
+        self._push_manual_undo_snapshot("Remove provider")
         if not name:
             raise ValueError("Select a provider to remove")
         if name not in self.provider_catalog:
@@ -1003,8 +1046,27 @@ class SchedulerDesktopApp:
         self.status_var.set(f"Status: Removed provider {name}")
         self._refresh_profile_preview()
 
+    def delete_selected_appointment(self) -> None:
+        profile = self._require_profile()
+        if not self.selected_request_id:
+            raise ValueError("Right-click an appointment block first to select it")
+
+        before = len(profile.get("requests", []))
+        self._push_manual_undo_snapshot("Delete appointment")
+        profile["requests"] = [r for r in profile.get("requests", []) if r.get("id") != self.selected_request_id]
+        after = len(profile.get("requests", []))
+        if after == before:
+            raise ValueError("Selected appointment was not found")
+
+        self.selected_request_id = None
+        self.last_result = build_live_result_from_profile(profile)
+        self._render_patient_grid(profile, self.last_result)
+        self._refresh_profile_preview()
+        self.status_var.set("Status: Deleted selected appointment")
+
     def add_appointment(self) -> None:
         profile = self._require_profile()
+        self._push_manual_undo_snapshot("Add appointment")
         patient_id = self.appt_patient_var.get().strip()
         provider_name = self.appt_provider_var.get().strip()
         room_id = self.appt_room_var.get().strip()
@@ -1055,40 +1117,10 @@ class SchedulerDesktopApp:
         )
 
         self._run_auto_reorganize_for_dates([date_key])
+        self.selected_request_id = None
         live_result = build_live_result_from_profile(profile)
         self.last_result = live_result
         self.status_var.set(f"Status: Added appointment {req_id}")
-        self._render_patient_grid(profile, live_result)
-        self._refresh_profile_preview()
-
-    def apply_auto_reconfigure(self) -> None:
-        profile = self._require_profile()
-        patient = self.shift_patient_var.get().strip()
-        discipline = self.shift_discipline_var.get().strip()
-        from_date = self.shift_from_date_var.get().strip()
-        to_date = self.shift_to_date_var.get().strip()
-        if from_date == to_date:
-            raise ValueError("From Date and To Date must be different")
-
-        self.auto_reconfigure_history.append(copy.deepcopy(profile.get("requests", [])))
-        moved = 0
-        for req in profile.get("requests", []):
-            if req.get("date_key") != from_date:
-                continue
-            if req.get("discipline") != discipline:
-                continue
-            if patient != "All" and patient not in req.get("patient_ids", []):
-                continue
-            req["date_key"] = to_date
-            moved += 1
-
-        if moved == 0:
-            raise ValueError("No matching appointments found for this Auto reconfigure rule")
-
-        self._run_auto_reorganize_for_dates([from_date, to_date])
-        live_result = build_live_result_from_profile(profile)
-        self.last_result = live_result
-        self.status_var.set(f"Status: Auto reconfigure moved {moved} appointment(s)")
         self._render_patient_grid(profile, live_result)
         self._refresh_profile_preview()
 
@@ -1337,16 +1369,6 @@ class SchedulerDesktopApp:
         self._set_text(self.auto_report_text, "\n".join(lines))
         self.status_var.set("Status: Bottleneck report generated")
 
-    def undo_auto_reconfigure(self) -> None:
-        profile = self._require_profile()
-        if not self.auto_reconfigure_history:
-            raise ValueError("No Auto reconfigure action to undo")
-        profile["requests"] = self.auto_reconfigure_history.pop()
-        self.last_result = build_live_result_from_profile(profile)
-        self._render_patient_grid(profile, self.last_result)
-        self._refresh_profile_preview()
-        self.status_var.set("Status: Undid last Auto reconfigure")
-
     def save_current_profile(self) -> None:
         profile = self._require_profile()
         default = self.loaded_profile_path or (Path("profiles") / "profile.json")
@@ -1368,12 +1390,11 @@ class SchedulerDesktopApp:
 
     def generate_from_loaded_profile(self) -> None:
         profile = self._require_profile()
-        payload = self._payload_for_date(self.view_date_var.get().strip())
-        result = handle_generate(payload) if payload["requests"] else {"assignments": {}, "room_timeline": {}}
+        self._run_auto_reorganize_for_dates(profile.get("planning_dates", []))
         self.last_result = build_live_result_from_profile(profile)
         save_last_schedule(self.last_result)
-        summary = summarize_schedule(result)
-        self.status_var.set(f"Status: Generated {summary.assignment_count} sessions for {payload['date_key']}")
+        summary = summarize_schedule(self.last_result)
+        self.status_var.set(f"Status: Generated {summary.assignment_count} sessions across planning dates")
         self._render_patient_grid(profile, self.last_result)
 
     def export_schedule(self) -> None:

@@ -191,3 +191,9 @@ Recommended first test tonight:
 - **Windows**: shows all allowed windows currently attached to the requirement being built.
 - **Hard constraint**: if enabled, the scheduler treats the requirement as mandatory. If disabled, it is a soft preference and may be skipped when infeasible.
 - **Priority**: relative importance score used for soft preference handling (higher means more important).
+
+
+- Manual Scheduler now supports **Undo Manual Action** (up to 10 recent actions), including appointment add/delete and key manual edits.
+- You can now right-click an appointment block in the grid to select it, then click **Delete Appointment** to remove it.
+- Manual Scheduler auto-reconfigure controls were removed; reconfiguration remains in the Auto Generator area.
+- The manual grid now shows appointments across planning dates in one horizontal timeline (date + patient columns), so you can scroll left/right across days.
