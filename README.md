@@ -186,9 +186,9 @@ Recommended first test tonight:
 
 ### Auto Generator controls explained
 - **W1 / W2 / W3**: choose which week(s) in the 3-week horizon the requirement applies to (week 1, week 2, week 3).
-- **Window Start / Window End**: define one allowable time range for that requirement (in HHMM, 15-minute increments).
-- **Add Window**: add another allowed time range for the same requirement (for example `0800-1400` and `1600-1700`).
-- **Windows**: shows all allowed windows currently attached to the requirement being built.
+- **Appointment Window Start / Appointment Window End**: define one allowable scheduling range for that requirement (in HHMM, 15-minute increments).
+- **Add Appointment Window**: add another allowed scheduling range for the same requirement (for example `0800-1400` and `1600-1700`).
+- **Appointment Windows**: shows all allowed appointment windows currently attached to the requirement being built.
 - **Hard constraint**: if enabled, the scheduler treats the requirement as mandatory. If disabled, it is a soft preference and may be skipped when infeasible.
 - **Priority**: relative importance score used for soft preference handling (higher means more important).
 
@@ -200,3 +200,6 @@ Recommended first test tonight:
 
 - Requirements Builder now labels recurrence selectors as **Weekday 1..5** (with `None` available for Weekday 2-5).
 - After Auto Generator runs, the produced schedule is loaded into Manual Scheduler so you can review and edit it manually.
+
+- **Solver Effort** (Auto Generator): increases search/candidate limits so complex schedules can use more compute before hitting search-limit errors.
+- **Provider Availability Window** (Provider List Management): sets weekday availability windows for selected providers, separate from appointment requirement windows.

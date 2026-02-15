@@ -204,11 +204,13 @@ def _solve_multiday(
     profile_template: Dict[str, Any],
     requests: List[Dict[str, Any]],
     previous_assignments: Dict[str, Dict[str, Any]] | None = None,
+    solver_limits: Dict[str, int] | None = None,
 ) -> Tuple[Dict[str, Dict[str, Any]], List[Bottleneck]]:
     assignments: Dict[str, Dict[str, Any]] = {}
     bottlenecks: List[Bottleneck] = []
 
     previous_assignments = previous_assignments or {}
+    solver_limits = solver_limits or {}
     requests_by_date: Dict[str, List[Dict[str, Any]]] = {}
     for request in requests:
         requests_by_date.setdefault(request["date_key"], []).append(request)
@@ -230,6 +232,8 @@ def _solve_multiday(
             "requests": daily_requests,
             "previous_assignments": daily_previous,
             "locked_request_ids": [],
+            "max_backtrack_states": solver_limits.get("max_backtrack_states"),
+            "max_candidates_per_request": solver_limits.get("max_candidates_per_request"),
         }
 
         try:
@@ -333,6 +337,7 @@ def generate_three_week_schedule(
     profile_template: Dict[str, Any],
     requirements: List[Dict[str, Any]],
     previous_assignments: Dict[str, Dict[str, Any]] | None = None,
+    solver_limits: Dict[str, int] | None = None,
 ) -> Dict[str, Any]:
     if len(requirements) > MAX_REQUIREMENTS:
         raise AutoScheduleError(f"Too many requirements ({len(requirements)}), max is {MAX_REQUIREMENTS}")
@@ -351,6 +356,7 @@ def generate_three_week_schedule(
         profile_template=profile_template,
         requests=hard_requests,
         previous_assignments=previous_assignments,
+        solver_limits=solver_limits,
     )
 
     if hard_bottlenecks:
@@ -377,6 +383,7 @@ def generate_three_week_schedule(
             profile_template=profile_template,
             requests=soft_requests,
             previous_assignments=previous_assignments,
+            solver_limits=solver_limits,
         )
         merged_assignments.update(soft_assignments)
 
@@ -433,10 +440,12 @@ def auto_reconfigure_schedule(
     profile_template: Dict[str, Any],
     requirements: List[Dict[str, Any]],
     existing_assignments: Dict[str, Dict[str, Any]],
+    solver_limits: Dict[str, int] | None = None,
 ) -> Dict[str, Any]:
     # Reuse generate flow with previous assignments for minimal disruption preference.
     return generate_three_week_schedule(
         profile_template=profile_template,
         requirements=requirements,
         previous_assignments=_deepcopy_json(existing_assignments),
+        solver_limits=solver_limits,
     )

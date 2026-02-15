@@ -152,6 +152,31 @@ class SchedulerTests(unittest.TestCase):
                 day_window=TimeWindow(600, 600),
             )
 
+    def test_custom_backtrack_limit_is_supported(self):
+        requests = [
+            SessionRequest(
+                id="r1",
+                patient_ids=("a",),
+                discipline="pt",
+                duration_minutes=15,
+                mode=Mode.INDIVIDUAL,
+                date_key=self.date_key,
+            )
+        ]
+        providers, patients, rooms = self._core_inputs()
+        schedule = self.engine.generate_schedule(
+            date_key=self.date_key,
+            weekday=self.weekday,
+            requests=requests,
+            providers=providers,
+            patients=patients,
+            rooms=rooms,
+            day_window=TimeWindow(8 * 60, 12 * 60),
+            max_backtrack_states=500000,
+            max_candidates_per_request=10000,
+        )
+        self.assertIn("r1", schedule)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -513,6 +513,7 @@ class SchedulerDesktopApp:
         self.auto_windows_var = self.tk.StringVar(value="")
         self.auto_hard_var = self.tk.BooleanVar(value=True)
         self.auto_priority_var = self.tk.StringVar(value="100")
+        self.auto_solver_effort_var = self.tk.StringVar(value="High")
 
         provider_values = ["Any provider"] + self.provider_catalog
         provider_optional_values = ["(none)"] + self.provider_catalog
@@ -568,21 +569,24 @@ class SchedulerDesktopApp:
         ttk.Checkbutton(week_frame, text="W2", variable=self.auto_week_2_var).pack(side="left")
         ttk.Checkbutton(week_frame, text="W3", variable=self.auto_week_3_var).pack(side="left")
 
-        ttk.Label(cond, text="Window Start").grid(row=5, column=0, sticky="w", pady=(6, 0))
+        ttk.Label(cond, text="Appointment Window Start").grid(row=5, column=0, sticky="w", pady=(6, 0))
         ttk.Combobox(cond, textvariable=self.auto_window_start_var, values=time_choices, state="readonly", width=10).grid(row=6, column=0, padx=2)
-        ttk.Label(cond, text="Window End").grid(row=5, column=1, sticky="w", pady=(6, 0))
+        ttk.Label(cond, text="Appointment Window End").grid(row=5, column=1, sticky="w", pady=(6, 0))
         ttk.Combobox(cond, textvariable=self.auto_window_end_var, values=time_choices, state="readonly", width=10).grid(row=6, column=1, padx=2)
-        ttk.Button(cond, text="Add Window", command=lambda: self._safe_action(self.add_requirement_window)).grid(row=6, column=2, padx=6)
+        ttk.Button(cond, text="Add Appointment Window", command=lambda: self._safe_action(self.add_requirement_window)).grid(row=6, column=2, padx=6)
 
-        ttk.Label(cond, text="Windows").grid(row=5, column=3, sticky="w", pady=(6, 0))
+        ttk.Label(cond, text="Appointment Windows").grid(row=5, column=3, sticky="w", pady=(6, 0))
         ttk.Entry(cond, textvariable=self.auto_windows_var, width=36).grid(row=6, column=3, columnspan=2, padx=2, sticky="w")
 
         ttk.Checkbutton(cond, text="Hard constraint", variable=self.auto_hard_var).grid(row=6, column=5, sticky="w")
         ttk.Label(cond, text="Priority").grid(row=5, column=6, sticky="w", pady=(6, 0))
         ttk.Combobox(cond, textvariable=self.auto_priority_var, values=["25", "50", "75", "100"], state="readonly", width=8).grid(row=6, column=6, padx=2)
+        ttk.Label(cond, text="Solver Effort").grid(row=5, column=7, sticky="w", pady=(6, 0))
+        ttk.Combobox(cond, textvariable=self.auto_solver_effort_var, values=["Standard", "High", "Very High", "Maximum"], state="readonly", width=12).grid(row=6, column=7, padx=2)
 
+        ttk.Label(cond, text="Provider availability windows are managed in Provider List Management below.", foreground="#495057").grid(row=7, column=0, columnspan=8, sticky="w", pady=(6, 0))
         action_row = ttk.Frame(cond)
-        action_row.grid(row=7, column=0, columnspan=8, sticky="w", pady=(8, 0))
+        action_row.grid(row=8, column=0, columnspan=8, sticky="w", pady=(8, 0))
         ttk.Button(action_row, text="Add Requirement", command=lambda: self._safe_action(self.add_auto_condition)).pack(side="left", padx=4)
         ttk.Button(action_row, text="Remove Selected Requirement", command=lambda: self._safe_action(self.remove_selected_condition)).pack(side="left", padx=4)
         ttk.Button(action_row, text="Clear Requirements", command=lambda: self._safe_action(self.clear_auto_conditions)).pack(side="left", padx=4)
@@ -654,6 +658,15 @@ class SchedulerDesktopApp:
         self.ttk.Entry(provider_frame, textvariable=self.provider_new_var, width=28).grid(row=1, column=1, padx=2)
         ttk.Button(provider_frame, text="Add New Provider", command=lambda: self._safe_action(self.add_new_provider)).grid(row=1, column=2, padx=4)
         ttk.Button(provider_frame, text="Remove Provider", command=lambda: self._safe_action(self.remove_provider)).grid(row=1, column=3, padx=4)
+
+        self.provider_avail_weekday_var = self.tk.StringVar(value="Monday")
+        self.provider_avail_start_var = self.tk.StringVar(value="0730")
+        self.provider_avail_end_var = self.tk.StringVar(value="1800")
+        self.ttk.Label(provider_frame, text="Provider Availability Window").grid(row=2, column=0, sticky="w", pady=(6, 0))
+        self.ttk.Combobox(provider_frame, textvariable=self.provider_avail_weekday_var, values=["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"], state="readonly", width=12).grid(row=3, column=0, padx=2, sticky="w")
+        self.ttk.Combobox(provider_frame, textvariable=self.provider_avail_start_var, values=time_choices, state="readonly", width=10).grid(row=3, column=1, padx=2, sticky="w")
+        self.ttk.Combobox(provider_frame, textvariable=self.provider_avail_end_var, values=time_choices, state="readonly", width=10).grid(row=3, column=2, padx=2, sticky="w")
+        ttk.Button(provider_frame, text="Set Availability Window", command=lambda: self._safe_action(self.set_provider_availability_window)).grid(row=3, column=3, padx=4)
 
         appt = ttk.Labelframe(parent, text="Add Appointment", padding=6)
         appt.pack(fill="x", pady=(0, 6))
@@ -1054,6 +1067,62 @@ class SchedulerDesktopApp:
         self.status_var.set(f"Status: Removed provider {name}")
         self._refresh_profile_preview()
 
+    def set_provider_availability_window(self) -> None:
+        selected_name = self.provider_selected_var.get().strip()
+        if not selected_name:
+            raise ValueError("Select a provider first")
+
+        weekday_map = {"Monday": 0, "Tuesday": 1, "Wednesday": 2, "Thursday": 3, "Friday": 4}
+        weekday_name = self.provider_avail_weekday_var.get().strip()
+        weekday = weekday_map.get(weekday_name)
+        if weekday is None:
+            raise ValueError("Weekday must be Monday-Friday")
+
+        start = parse_time_input(self.provider_avail_start_var.get())
+        end = parse_time_input(self.provider_avail_end_var.get())
+        if end <= start:
+            raise ValueError("Availability end must be after start")
+
+        self._push_manual_undo_snapshot("Set provider availability window")
+        updated = False
+        for profile in self.provider_profiles:
+            pid = str(profile.get("provider_id") or profile.get("provider_name") or profile.get("id", ""))
+            if pid != selected_name:
+                continue
+            templates = profile.get("availability_templates")
+            if not isinstance(templates, list):
+                templates = []
+            replaced = False
+            for t in templates:
+                if int(t.get("weekday", -1)) == weekday:
+                    t["windows"] = [{"start_minute": start, "end_minute": end}]
+                    replaced = True
+                    break
+            if not replaced:
+                templates.append({"weekday": weekday, "windows": [{"start_minute": start, "end_minute": end}]})
+            profile["availability_templates"] = templates
+            updated = True
+            break
+
+        if not updated:
+            self.provider_profiles.append(
+                {
+                    "provider_id": selected_name,
+                    "provider_name": selected_name,
+                    "discipline": "",
+                    "availability_templates": [{"weekday": weekday, "windows": [{"start_minute": start, "end_minute": end}]}],
+                    "exceptions": [],
+                }
+            )
+
+        save_provider_profiles(self.provider_profiles)
+        if self.loaded_profile:
+            self._sync_profile_resources(self.loaded_profile)
+            self.last_result = build_live_result_from_profile(self.loaded_profile)
+            self._render_patient_grid(self.loaded_profile, self.last_result)
+        self._refresh_profile_preview()
+        self.status_var.set(f"Status: Updated availability window for {selected_name} ({weekday_name})")
+
     def delete_selected_appointment(self) -> None:
         profile = self._require_profile()
         if not self.selected_request_id:
@@ -1279,6 +1348,16 @@ class SchedulerDesktopApp:
             )
             self.auto_condition_list.insert(self.tk.END, line)
 
+    def _solver_limits_from_ui(self) -> Dict[str, int]:
+        effort = self.auto_solver_effort_var.get().strip().lower()
+        mapping = {
+            "standard": {"max_backtrack_states": 250000, "max_candidates_per_request": 5000},
+            "high": {"max_backtrack_states": 750000, "max_candidates_per_request": 10000},
+            "very high": {"max_backtrack_states": 1500000, "max_candidates_per_request": 20000},
+            "maximum": {"max_backtrack_states": 3000000, "max_candidates_per_request": 30000},
+        }
+        return mapping.get(effort, mapping["high"])
+
     def _build_auto_profile_template(self) -> Dict[str, Any]:
         start = parse_date_parts(self.auto_start_year_var.get(), self.auto_start_month_var.get(), self.auto_start_day_var.get())
         patient_count = int(self.auto_patients_var.get())
@@ -1319,7 +1398,11 @@ class SchedulerDesktopApp:
             raise ValueError("Add at least one requirement before auto-generating")
 
         profile_template = self._build_auto_profile_template()
-        result = generate_three_week_schedule(profile_template=profile_template, requirements=self.auto_conditions)
+        result = generate_three_week_schedule(
+            profile_template=profile_template,
+            requirements=self.auto_conditions,
+            solver_limits=self._solver_limits_from_ui(),
+        )
         self._update_after_auto_generation(profile_template, result)
 
         if not result.get("ok"):
@@ -1353,6 +1436,7 @@ class SchedulerDesktopApp:
             profile_template=profile_template,
             requirements=self.auto_conditions,
             existing_assignments=existing,
+            solver_limits=self._solver_limits_from_ui(),
         )
         self._update_after_auto_generation(profile_template, result)
         diff = result.get("diff", {})

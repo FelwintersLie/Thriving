@@ -169,6 +169,8 @@ def handle_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     previous = _assignments_from_dict(payload.get("previous_assignments", {}))
     locked_request_ids = set(payload.get("locked_request_ids", []))
+    max_backtrack_states = payload.get("max_backtrack_states")
+    max_candidates_per_request = payload.get("max_candidates_per_request")
 
     generated = engine.generate_schedule(
         date_key=date_key,
@@ -180,6 +182,8 @@ def handle_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         day_window=day_window,
         previous_assignments=previous,
         locked_request_ids=locked_request_ids,
+        max_backtrack_states=int(max_backtrack_states) if max_backtrack_states is not None else None,
+        max_candidates_per_request=int(max_candidates_per_request) if max_candidates_per_request is not None else None,
     )
 
     timeline = build_room_timeline(rooms=rooms, assignments=generated, day_window=day_window)

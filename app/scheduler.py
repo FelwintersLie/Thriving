@@ -12,6 +12,8 @@ MAX_PATIENTS = 256
 MAX_ROOMS = 64
 MAX_CANDIDATES_PER_REQUEST = 5000
 MAX_BACKTRACK_STATES = 250000
+MAX_CANDIDATES_PER_REQUEST_HARD_CAP = 50000
+MAX_BACKTRACK_STATES_HARD_CAP = 5000000
 
 
 class Mode(str, Enum):
@@ -137,9 +139,15 @@ class ScheduleEngine:
         day_window: TimeWindow,
         previous_assignments: Optional[Dict[str, Assignment]] = None,
         locked_request_ids: Optional[set[str]] = None,
+        max_backtrack_states: Optional[int] = None,
+        max_candidates_per_request: Optional[int] = None,
     ) -> Dict[str, Assignment]:
         previous_assignments = previous_assignments or {}
         locked_request_ids = locked_request_ids or set()
+        backtrack_limit = max_backtrack_states or MAX_BACKTRACK_STATES
+        candidate_limit = max_candidates_per_request or MAX_CANDIDATES_PER_REQUEST
+        backtrack_limit = max(1000, min(int(backtrack_limit), MAX_BACKTRACK_STATES_HARD_CAP))
+        candidate_limit = max(100, min(int(candidate_limit), MAX_CANDIDATES_PER_REQUEST_HARD_CAP))
 
         self._validate_input_sizes(requests=requests, providers=providers, patients=patients, rooms=rooms, day_window=day_window)
 
@@ -202,7 +210,7 @@ class ScheduleEngine:
                                 mode=req.mode,
                             )
                         )
-                        if len(options) > MAX_CANDIDATES_PER_REQUEST:
+                        if len(options) > candidate_limit:
                             raise UnschedulableError(
                                 f"Request {req.id} has too many options ({len(options)}). Narrow time windows or reduce resources."
                             )
@@ -252,9 +260,9 @@ class ScheduleEngine:
         def backtrack(index: int, assigned: Dict[str, Assignment]) -> None:
             nonlocal best_solution, best_score, states_visited
             states_visited += 1
-            if states_visited > MAX_BACKTRACK_STATES:
+            if states_visited > backtrack_limit:
                 raise UnschedulableError(
-                    "Search limit reached while scheduling. Narrow windows or schedule fewer sessions."
+                    "Search limit reached while scheduling. Narrow windows, schedule fewer sessions, or increase solver effort."
                 )
             if index == len(sorted_requests):
                 current_score = score(assigned)
