@@ -242,3 +242,20 @@ Recommended first test tonight:
 - Saved in `data/room_rules.json` and applied immediately.
 - Manual Scheduler blocks Add Appointment when selected room violates room rules.
 - Auto-generator treats room rules as hard constraints and includes room-rule rejection counts in infeasibility details.
+
+
+### IOP + EVAL Integrated Scheduling
+- The app now supports a unified appointment model for both programs with patient IDs:
+  - **IOP**: `I1..I30`
+  - **EVAL**: `E1..E10`
+- Each appointment carries program metadata (`program_type`), stable `appointment_id`, and `soft_locked` support for imported schedules.
+- New **EVAL Generator** tab supports:
+  - cohort selection (`Mon-Wed` or `Tue-Thu`),
+  - EVAL patient count,
+  - day-1 eval group start (`0830` / `0930` / `1000`) and duration,
+  - combined generation alongside IOP.
+- New **Generate Combined Schedule** mode tries to place IOP and EVAL together while honoring existing soft-locked appointments.
+- New manual-grid controls support:
+  - Program filter (`IOP` / `EVAL` / `Both`),
+  - Grid mode switch (`Patient Grid` / `Room Grid` / `Provider Grid`).
+- Import existing schedules via EVAL tab (**Import Existing Schedule JSON**); imported appointments are marked `soft_locked=true` by default.

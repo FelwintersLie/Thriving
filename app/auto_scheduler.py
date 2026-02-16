@@ -31,6 +31,26 @@ WEEKDAY_NAME_TO_INDEX = {
 }
 
 
+
+DEFAULT_EVAL_TEMPLATE = [
+    {"discipline": "Physical Therapy", "duration_minutes": 75, "count": 1},
+    {"discipline": "Physical Therapy", "duration_minutes": 45, "count": 1},
+    {"discipline": "Speech-Language Pathology", "duration_minutes": 60, "count": 1},
+    {"discipline": "Speech-Language Pathology", "duration_minutes": 45, "count": 1},
+    {"discipline": "Athletic Trainer", "duration_minutes": 60, "count": 1},
+    {"discipline": "Audiology", "duration_minutes": 60, "count": 1},
+    {"discipline": "Dietician", "duration_minutes": 45, "count": 1},
+    {"discipline": "Nutrition", "duration_minutes": 45, "count": 1},
+    {"discipline": "Primary Care", "duration_minutes": 60, "count": 1},
+    {"discipline": "Pharmacology", "duration_minutes": 60, "count": 1},
+    {"discipline": "Behavioral Health", "duration_minutes": 60, "count": 1},
+    {"discipline": "Behavioral Health", "duration_minutes": 90, "count": 1},
+    {"discipline": "Psychiatry", "duration_minutes": 75, "count": 1},
+    {"discipline": "Neuropsychology", "duration_minutes": 165, "count": 1},
+    {"discipline": "Art Therapy", "duration_minutes": 60, "count": 1},
+]
+
+
 def planning_dates(start_monday: date, weeks: int = 3) -> List[str]:
     out: List[str] = []
     current = start_monday
@@ -216,12 +236,14 @@ def _solve_multiday(
     requests: List[Dict[str, Any]],
     previous_assignments: Dict[str, Dict[str, Any]] | None = None,
     solver_limits: Dict[str, int] | None = None,
+    locked_request_ids: List[str] | None = None,
 ) -> Tuple[Dict[str, Dict[str, Any]], List[Bottleneck]]:
     assignments: Dict[str, Dict[str, Any]] = {}
     bottlenecks: List[Bottleneck] = []
 
     previous_assignments = previous_assignments or {}
     solver_limits = solver_limits or {}
+    locked_request_ids = set(locked_request_ids or [])
     requests_by_date: Dict[str, List[Dict[str, Any]]] = {}
     for request in requests:
         requests_by_date.setdefault(request["date_key"], []).append(request)
@@ -242,7 +264,7 @@ def _solve_multiday(
             "rooms": profile_template["rooms"],
             "requests": daily_requests,
             "previous_assignments": daily_previous,
-            "locked_request_ids": [],
+            "locked_request_ids": sorted(rid for rid in locked_request_ids if rid in {r["id"] for r in daily_requests}),
             "max_backtrack_states": solver_limits.get("max_backtrack_states"),
             "max_candidates_per_request": solver_limits.get("max_candidates_per_request"),
         }
@@ -349,6 +371,7 @@ def generate_three_week_schedule(
     requirements: List[Dict[str, Any]],
     previous_assignments: Dict[str, Dict[str, Any]] | None = None,
     solver_limits: Dict[str, int] | None = None,
+    locked_request_ids: List[str] | None = None,
 ) -> Dict[str, Any]:
     if len(requirements) > MAX_REQUIREMENTS:
         raise AutoScheduleError(f"Too many requirements ({len(requirements)}), max is {MAX_REQUIREMENTS}")
@@ -368,6 +391,7 @@ def generate_three_week_schedule(
         requests=hard_requests,
         previous_assignments=previous_assignments,
         solver_limits=solver_limits,
+        locked_request_ids=locked_request_ids,
     )
 
     if hard_bottlenecks:
@@ -395,6 +419,7 @@ def generate_three_week_schedule(
             requests=soft_requests,
             previous_assignments=previous_assignments,
             solver_limits=solver_limits,
+            locked_request_ids=locked_request_ids,
         )
         merged_assignments.update(soft_assignments)
 
@@ -452,6 +477,7 @@ def auto_reconfigure_schedule(
     requirements: List[Dict[str, Any]],
     existing_assignments: Dict[str, Dict[str, Any]],
     solver_limits: Dict[str, int] | None = None,
+    locked_request_ids: List[str] | None = None,
 ) -> Dict[str, Any]:
     # Reuse generate flow with previous assignments for minimal disruption preference.
     return generate_three_week_schedule(
@@ -459,4 +485,127 @@ def auto_reconfigure_schedule(
         requirements=requirements,
         previous_assignments=_deepcopy_json(existing_assignments),
         solver_limits=solver_limits,
+        locked_request_ids=locked_request_ids,
     )
+
+
+
+def build_eval_requests(
+    *,
+    cohort_start: date,
+    cohort_type: str,
+    eval_patient_ids: List[str],
+    group_duration_minutes: int,
+    group_start_time: int,
+    template_sessions: List[Dict[str, Any]] | None = None,
+    art_therapy_group: bool = False,
+) -> Tuple[List[Dict[str, Any]], List[str]]:
+    sessions = template_sessions or DEFAULT_EVAL_TEMPLATE
+    if cohort_type not in {"Mon-Wed", "Tue-Thu"}:
+        raise ValueError("cohort_type must be Mon-Wed or Tue-Thu")
+    if group_start_time not in {8 * 60 + 30, 9 * 60 + 30, 10 * 60}:
+        raise ValueError("Eval group start must be 0830, 0930, or 1000")
+
+    if cohort_type == "Tue-Thu":
+        while cohort_start.weekday() != 1:
+            cohort_start += timedelta(days=1)
+    else:
+        while cohort_start.weekday() != 0:
+            cohort_start += timedelta(days=1)
+    eval_dates = [(cohort_start + timedelta(days=o)).isoformat() for o in [0, 1, 2]]
+
+    requests: List[Dict[str, Any]] = []
+    requests.append(
+        {
+            "id": f"eval_group_{eval_dates[0]}",
+            "patient_ids": list(eval_patient_ids),
+            "discipline": "Evaluation Group",
+            "duration_minutes": group_duration_minutes,
+            "mode": "group",
+            "date_key": eval_dates[0],
+            "preferred_window": {"start_minute": group_start_time, "end_minute": group_start_time + group_duration_minutes},
+            "group_key": f"eval_group_{eval_dates[0]}",
+            "label": "EVAL Intake Group",
+            "provider_id": "NO_PROVIDER_EVAL_GROUP",
+            "room_id": "Conference Room",
+        }
+    )
+
+    for patient_id in eval_patient_ids:
+        seq = 0
+        for sess in sessions:
+            count = int(sess.get("count", 1))
+            for _ in range(count):
+                seq += 1
+                discipline = str(sess["discipline"]).strip()
+                mode = "group" if (discipline == "Art Therapy" and art_therapy_group) else "individual"
+                date_key = eval_dates[(seq - 1) % len(eval_dates)]
+                idx = (seq - 1) % len(eval_dates)
+                start_minute = group_start_time + group_duration_minutes if idx == 0 else 7 * 60 + 30
+                requests.append(
+                    {
+                        "id": f"eval_{patient_id}_{discipline}_{seq}_{date_key}",
+                        "patient_ids": [patient_id],
+                        "discipline": discipline,
+                        "duration_minutes": int(sess["duration_minutes"]),
+                        "mode": mode,
+                        "date_key": date_key,
+                        "preferred_window": {"start_minute": start_minute, "end_minute": 18 * 60},
+                        "group_key": None,
+                        "label": f"{discipline} ({patient_id})",
+                    }
+                )
+    return requests, eval_dates
+
+
+def generate_eval_schedule(
+    *,
+    profile_template: Dict[str, Any],
+    cohort_start: date,
+    cohort_type: str,
+    eval_patient_count: int,
+    group_duration_minutes: int,
+    group_start_time: int,
+    template_sessions: List[Dict[str, Any]] | None = None,
+    art_therapy_group: bool = False,
+    previous_assignments: Dict[str, Dict[str, Any]] | None = None,
+    solver_limits: Dict[str, int] | None = None,
+    locked_request_ids: List[str] | None = None,
+) -> Dict[str, Any]:
+    eval_ids = [f"E{i}" for i in range(1, eval_patient_count + 1)]
+    requests, eval_dates = build_eval_requests(
+        cohort_start=cohort_start,
+        cohort_type=cohort_type,
+        eval_patient_ids=eval_ids,
+        group_duration_minutes=group_duration_minutes,
+        group_start_time=group_start_time,
+        template_sessions=template_sessions,
+        art_therapy_group=art_therapy_group,
+    )
+
+    profile = _deepcopy_json(profile_template)
+    profile["planning_dates"] = sorted(dict.fromkeys(list(profile.get("planning_dates", [])) + eval_dates))
+    assignments, bottlenecks = _solve_multiday(
+        profile_template=profile,
+        requests=requests,
+        previous_assignments=previous_assignments,
+        solver_limits=solver_limits,
+        locked_request_ids=locked_request_ids,
+    )
+    if bottlenecks:
+        return {
+            "ok": False,
+            "assignments": assignments,
+            "requests": requests,
+            "bottlenecks": [b.__dict__ for b in bottlenecks],
+            "report": {"ok": False, "issues": [b.reason for b in bottlenecks[:25]]},
+            "diff": diff_assignments(previous_assignments or {}, assignments),
+        }
+    return {
+        "ok": True,
+        "assignments": assignments,
+        "requests": requests,
+        "bottlenecks": [],
+        "report": {"ok": True, "issues": []},
+        "diff": diff_assignments(previous_assignments or {}, assignments),
+    }

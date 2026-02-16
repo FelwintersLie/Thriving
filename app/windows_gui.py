@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -12,6 +13,7 @@ from app.auto_scheduler import (
     auto_reconfigure_schedule,
     explain_infeasibility,
     generate_three_week_schedule,
+    generate_eval_schedule,
     validate_requirement,
 )
 from app.health_check import run_health_check
@@ -54,6 +56,7 @@ DISCIPLINES = [
     "PT/Audiology Group",
     "Audiology",
     "Yoga",
+    "Evaluation Group",
 ]
 
 PREDEFINED_ROOMS = [
@@ -121,7 +124,9 @@ DISCIPLINE_COLORS = {
 GRID_START_MINUTE = 7 * 60 + 30
 GRID_END_MINUTE = 18 * 60
 GRID_SLOT_MINUTES = 15
-PATIENT_ID_CHOICES = [str(i) for i in range(1, 100)]
+IOP_PATIENT_ID_CHOICES = [f"I{i}" for i in range(1, 31)]
+EVAL_PATIENT_ID_CHOICES = [f"E{i}" for i in range(1, 11)]
+PATIENT_ID_CHOICES = IOP_PATIENT_ID_CHOICES + EVAL_PATIENT_ID_CHOICES
 
 
 @dataclass
@@ -363,6 +368,9 @@ def build_live_result_from_profile(profile: Dict[str, Any]) -> Dict[str, Any]:
             "label": req.get("label") or req.get("discipline", "Session"),
             "mode": req.get("mode", "individual"),
             "date_key": req.get("date_key"),
+            "program_type": req.get("program_type", "IOP"),
+            "soft_locked": bool(req.get("soft_locked", False)),
+            "appointment_id": req.get("appointment_id") or req_id,
         }
     return {"assignments": assignments, "room_timeline": {}}
 
@@ -417,6 +425,15 @@ class SchedulerDesktopApp:
         self.provider_catalog = [p["provider_name"] for p in self.provider_profiles]
         self._persist_provider_catalog()
         self.room_rules = load_room_rules(PREDEFINED_ROOMS)
+        conf = self.room_rules.setdefault("rooms", {}).setdefault(
+            "Conference Room",
+            {"unavailable_weekly": {i: [] for i in range(5)}, "unavailable_dates": [], "available_only_weekly": {i: [] for i in range(5)}, "available_only_dates": []},
+        )
+        for wd in [0, 1]:
+            windows = conf.setdefault("unavailable_weekly", {}).setdefault(wd, [])
+            if not any(int(w.get("start_minute", -1)) == 8 * 60 + 30 and int(w.get("end_minute", -1)) == 11 * 60 for w in windows):
+                windows.append({"start_minute": 8 * 60 + 30, "end_minute": 11 * 60})
+        save_room_rules(self.room_rules, valid_rooms=PREDEFINED_ROOMS)
         self.last_generated_schedule = load_last_generated_schedule()
         self.last_result: Dict[str, Any] | None = None
         raw_conditions = load_requirements_catalog()
@@ -478,7 +495,10 @@ class SchedulerDesktopApp:
         notebook.add(manual_tab, text="Manual Scheduler")
 
         auto_tab = ttk.Frame(notebook)
-        notebook.add(auto_tab, text="Auto Generator (3-week)")
+        notebook.add(auto_tab, text="IOP Generator (3-week)")
+
+        eval_tab = ttk.Frame(notebook)
+        notebook.add(eval_tab, text="EVAL Generator")
 
         provider_tab = ttk.Frame(notebook)
         notebook.add(provider_tab, text="Provider Profiles")
@@ -527,7 +547,18 @@ class SchedulerDesktopApp:
         self.legend_var = tk.StringVar(value="Legend: Add appointments to visualize schedule.")
         ttk.Label(manual_tab, textvariable=self.legend_var).pack(anchor="w", pady=(6, 0))
 
+        view_controls = ttk.Frame(manual_tab)
+        view_controls.pack(fill=tk.X, pady=(4, 0))
+        self.grid_mode_var = tk.StringVar(value="Patient Grid")
+        self.program_filter_var = tk.StringVar(value="Both")
+        ttk.Label(view_controls, text="Grid Mode").pack(side="left")
+        ttk.Combobox(view_controls, textvariable=self.grid_mode_var, values=["Patient Grid", "Room Grid", "Provider Grid"], state="readonly", width=16).pack(side="left", padx=4)
+        ttk.Label(view_controls, text="Program Filter").pack(side="left", padx=(10, 0))
+        ttk.Combobox(view_controls, textvariable=self.program_filter_var, values=["Both", "IOP", "EVAL"], state="readonly", width=10).pack(side="left", padx=4)
+        ttk.Button(view_controls, text="Apply View", command=lambda: self._safe_action(self.refresh_current_grid_view)).pack(side="left", padx=8)
+
         self._build_auto_generator_tab(auto_tab)
+        self._build_eval_generator_tab(eval_tab)
         self._build_provider_profiles_tab(provider_tab)
         self._build_room_rules_tab(room_rules_tab)
 
@@ -546,7 +577,7 @@ class SchedulerDesktopApp:
         self.auto_start_day_var = self.tk.StringVar(value=f"{today.day:02d}")
 
         ttk.Label(frame, text="Patient count").grid(row=0, column=0, sticky="w")
-        ttk.Combobox(frame, textvariable=self.auto_patients_var, values=[str(i) for i in range(1, 100)], state="readonly", width=8).grid(row=1, column=0, padx=2)
+        ttk.Combobox(frame, textvariable=self.auto_patients_var, values=[str(i) for i in range(1, 31)], state="readonly", width=8).grid(row=1, column=0, padx=2)
 
         ttk.Label(frame, text="Start Year").grid(row=0, column=1, sticky="w")
         ttk.Combobox(frame, textvariable=self.auto_start_year_var, values=[str(today.year + i) for i in range(0, 3)], state="readonly", width=8).grid(row=1, column=1, padx=2)
@@ -690,6 +721,51 @@ class SchedulerDesktopApp:
         ttk.Button(action_frame, text="Explain bottleneck", command=lambda: self._safe_action(self.explain_auto_bottleneck)).pack(side="left", padx=4)
 
         self._refresh_auto_condition_list()
+    def _build_eval_generator_tab(self, parent) -> None:
+        ttk = self.ttk
+        frame = ttk.Labelframe(parent, text="3-Day EVAL Generator", padding=10)
+        frame.pack(fill="x", padx=6, pady=6)
+
+        self.eval_start_year_var = self.tk.StringVar(value=self.auto_start_year_var.get() if hasattr(self, "auto_start_year_var") else str(datetime.utcnow().year))
+        self.eval_start_month_var = self.tk.StringVar(value=self.auto_start_month_var.get() if hasattr(self, "auto_start_month_var") else f"{datetime.utcnow().month:02d}")
+        self.eval_start_day_var = self.tk.StringVar(value=self.auto_start_day_var.get() if hasattr(self, "auto_start_day_var") else f"{datetime.utcnow().day:02d}")
+        self.eval_cohort_var = self.tk.StringVar(value="Mon-Wed")
+        self.eval_patient_count_var = self.tk.StringVar(value="3")
+        self.eval_group_start_var = self.tk.StringVar(value="0830")
+        self.eval_group_duration_var = self.tk.StringVar(value="60")
+        self.eval_art_group_var = self.tk.BooleanVar(value=False)
+
+        ttk.Label(frame, text="Cohort Start Year").grid(row=0, column=0, sticky="w")
+        ttk.Combobox(frame, textvariable=self.eval_start_year_var, values=self.year_choices if hasattr(self, "year_choices") else [str(datetime.utcnow().year)], state="readonly", width=8).grid(row=1, column=0, padx=2)
+        ttk.Label(frame, text="Month").grid(row=0, column=1, sticky="w")
+        ttk.Combobox(frame, textvariable=self.eval_start_month_var, values=[f"{m:02d}" for m in range(1, 13)], state="readonly", width=6).grid(row=1, column=1, padx=2)
+        ttk.Label(frame, text="Day").grid(row=0, column=2, sticky="w")
+        ttk.Combobox(frame, textvariable=self.eval_start_day_var, values=[f"{d:02d}" for d in range(1, 32)], state="readonly", width=6).grid(row=1, column=2, padx=2)
+
+        ttk.Label(frame, text="Cohort Type").grid(row=0, column=3, sticky="w")
+        ttk.Combobox(frame, textvariable=self.eval_cohort_var, values=["Mon-Wed", "Tue-Thu"], state="readonly", width=10).grid(row=1, column=3, padx=2)
+        ttk.Label(frame, text="EVAL Patients").grid(row=0, column=4, sticky="w")
+        ttk.Combobox(frame, textvariable=self.eval_patient_count_var, values=[str(i) for i in range(1, 11)], state="readonly", width=8).grid(row=1, column=4, padx=2)
+
+        ttk.Label(frame, text="Day-1 Group Start").grid(row=0, column=5, sticky="w")
+        ttk.Combobox(frame, textvariable=self.eval_group_start_var, values=["0830", "0930", "1000"], state="readonly", width=8).grid(row=1, column=5, padx=2)
+        ttk.Label(frame, text="Group Duration").grid(row=0, column=6, sticky="w")
+        ttk.Combobox(frame, textvariable=self.eval_group_duration_var, values=[str(i) for i in range(30, 181, 15)], state="readonly", width=8).grid(row=1, column=6, padx=2)
+        ttk.Checkbutton(frame, text="Art Therapy as group", variable=self.eval_art_group_var).grid(row=1, column=7, padx=8)
+
+        actions = ttk.Frame(parent)
+        actions.pack(fill="x", padx=6, pady=(0, 6))
+        ttk.Button(actions, text="Generate EVAL Schedule", command=lambda: self._safe_action(self.generate_eval_schedule)).pack(side="left", padx=4)
+        ttk.Button(actions, text="Generate Combined Schedule", command=lambda: self._safe_action(self.generate_combined_schedule)).pack(side="left", padx=4)
+        ttk.Button(actions, text="Import Existing Schedule JSON", command=lambda: self._safe_action(self.import_existing_schedule_json)).pack(side="left", padx=4)
+
+        report = ttk.Labelframe(parent, text="EVAL / Combined Report", padding=10)
+        report.pack(fill="both", expand=True, padx=6, pady=6)
+        self.eval_report_text = self.scrolledtext.ScrolledText(report, height=10, wrap=self.tk.WORD)
+        self.eval_report_text.pack(fill="both", expand=True)
+        self.eval_report_text.insert(self.tk.END, "No EVAL generation run yet.\n")
+        self.eval_report_text.configure(state=self.tk.DISABLED)
+
     def _build_provider_profiles_tab(self, parent) -> None:
         ttk = self.ttk
         tk = self.tk
@@ -927,6 +1003,7 @@ class SchedulerDesktopApp:
 
         self.appt_date_var = self.tk.StringVar(value=date_to_key(current))
         self.appt_patient_var = self.tk.StringVar(value=PATIENT_ID_CHOICES[0])
+        self.appt_program_var = self.tk.StringVar(value="IOP")
         self.appt_provider_var = self.tk.StringVar(value=self.provider_catalog[0] if self.provider_catalog else "")
         self.appt_room_var = self.tk.StringVar(value=PREDEFINED_ROOMS[0])
         self.appt_mode_var = self.tk.StringVar(value="individual")
@@ -941,29 +1018,32 @@ class SchedulerDesktopApp:
         self.ttk.Label(appt, text="Patient ID").grid(row=0, column=1, sticky="w")
         self.ttk.Combobox(appt, textvariable=self.appt_patient_var, values=PATIENT_ID_CHOICES, state="readonly", width=10).grid(row=1, column=1, padx=2)
 
-        self.ttk.Label(appt, text="Provider Name").grid(row=0, column=2, sticky="w")
+        self.ttk.Label(appt, text="Program").grid(row=0, column=2, sticky="w")
+        self.ttk.Combobox(appt, textvariable=self.appt_program_var, values=["IOP", "EVAL"], state="readonly", width=10).grid(row=1, column=2, padx=2)
+
+        self.ttk.Label(appt, text="Provider Name").grid(row=0, column=3, sticky="w")
         self.appt_provider_combo = self.ttk.Combobox(appt, textvariable=self.appt_provider_var, values=self.provider_catalog, state="readonly", width=20)
-        self.appt_provider_combo.grid(row=1, column=2, padx=2)
+        self.appt_provider_combo.grid(row=1, column=3, padx=2)
         self.appt_provider_combo.bind("<<ComboboxSelected>>", lambda _e: self._safe_action(self._on_manual_provider_selected))
 
-        self.ttk.Label(appt, text="Room").grid(row=0, column=3, sticky="w")
+        self.ttk.Label(appt, text="Room").grid(row=0, column=4, sticky="w")
         self.appt_room_combo = self.ttk.Combobox(appt, textvariable=self.appt_room_var, values=PREDEFINED_ROOMS, state="readonly", width=16)
-        self.appt_room_combo.grid(row=1, column=3, padx=2)
+        self.appt_room_combo.grid(row=1, column=4, padx=2)
 
-        self.ttk.Label(appt, text="Type").grid(row=0, column=4, sticky="w")
-        self.ttk.Combobox(appt, textvariable=self.appt_mode_var, values=["individual", "group"], state="readonly", width=12).grid(row=1, column=4, padx=2)
+        self.ttk.Label(appt, text="Type").grid(row=0, column=5, sticky="w")
+        self.ttk.Combobox(appt, textvariable=self.appt_mode_var, values=["individual", "group"], state="readonly", width=12).grid(row=1, column=5, padx=2)
 
-        self.ttk.Label(appt, text="Discipline").grid(row=0, column=5, sticky="w")
-        self.ttk.Combobox(appt, textvariable=self.appt_discipline_var, values=DISCIPLINES, state="readonly", width=22).grid(row=1, column=5, padx=2)
+        self.ttk.Label(appt, text="Discipline").grid(row=0, column=6, sticky="w")
+        self.ttk.Combobox(appt, textvariable=self.appt_discipline_var, values=DISCIPLINES, state="readonly", width=22).grid(row=1, column=6, padx=2)
 
-        self.ttk.Label(appt, text="Begin").grid(row=0, column=6, sticky="w")
-        self.ttk.Combobox(appt, textvariable=self.appt_start_var, values=time_choices, state="readonly", width=10).grid(row=1, column=6, padx=2)
-        self.ttk.Label(appt, text="End").grid(row=0, column=7, sticky="w")
-        self.ttk.Combobox(appt, textvariable=self.appt_end_var, values=time_choices, state="readonly", width=10).grid(row=1, column=7, padx=2)
+        self.ttk.Label(appt, text="Begin").grid(row=0, column=7, sticky="w")
+        self.ttk.Combobox(appt, textvariable=self.appt_start_var, values=time_choices, state="readonly", width=10).grid(row=1, column=7, padx=2)
+        self.ttk.Label(appt, text="End").grid(row=0, column=8, sticky="w")
+        self.ttk.Combobox(appt, textvariable=self.appt_end_var, values=time_choices, state="readonly", width=10).grid(row=1, column=8, padx=2)
 
-        ttk.Button(appt, text="Add Appointment", command=lambda: self._safe_action(self.add_appointment)).grid(row=1, column=8, padx=6)
-        ttk.Button(appt, text="Delete Appointment", command=lambda: self._safe_action(self.delete_selected_appointment)).grid(row=1, column=9, padx=6)
-        ttk.Button(appt, text="Undo Manual Action", command=lambda: self._safe_action(self.undo_manual_action)).grid(row=1, column=10, padx=6)
+        ttk.Button(appt, text="Add Appointment", command=lambda: self._safe_action(self.add_appointment)).grid(row=1, column=9, padx=6)
+        ttk.Button(appt, text="Delete Appointment", command=lambda: self._safe_action(self.delete_selected_appointment)).grid(row=1, column=10, padx=6)
+        ttk.Button(appt, text="Undo Manual Action", command=lambda: self._safe_action(self.undo_manual_action)).grid(row=1, column=11, padx=6)
 
     def _safe_action(self, fn) -> None:
         try:
@@ -1545,6 +1625,11 @@ class SchedulerDesktopApp:
         self.revert_room_rules_editor()
         self.save_room_rules()
 
+    def refresh_current_grid_view(self) -> None:
+        if self.loaded_profile:
+            self.last_result = self.last_result or build_live_result_from_profile(self.loaded_profile)
+            self._render_patient_grid(self.loaded_profile, self.last_result)
+
     def _refresh_profile_preview(self) -> None:
         if not self.loaded_profile:
             return
@@ -1554,7 +1639,7 @@ class SchedulerDesktopApp:
             f"Start date: {profile.get('date_key')}",
             f"Planning days: {len(profile.get('planning_dates', []))}",
             f"Providers in catalog: {len(self.provider_catalog)}",
-            "Patient IDs available: 1-99",
+            "Patient IDs available: I1-I30 and E1-E10",
             f"Rooms: {len(PREDEFINED_ROOMS)} (fixed)",
             f"Appointments: {len(profile.get('requests', []))}",
         ]
@@ -1593,6 +1678,7 @@ class SchedulerDesktopApp:
                     "provider": self._provider_display_name(assignment.get("provider_id", "")),
                     "room": assignment.get("room_id", ""),
                     "patients": pids,
+                    "program_type": req.get("program_type", assignment.get("program_type", "IOP")),
                 }
             )
             patient_ids.update(pids)
@@ -1603,13 +1689,31 @@ class SchedulerDesktopApp:
         if not ordered_dates:
             ordered_dates = planning_dates[:]
 
-        patient_labels = sorted(patient_ids, key=lambda x: int(x) if x.isdigit() else x)
-        if not patient_labels:
-            canvas.create_text(16, 20, anchor="w", text="No appointments scheduled yet.", fill="#003049", font=("Segoe UI", 11, "bold"))
+        program_filter = self.program_filter_var.get() if hasattr(self, "program_filter_var") else "Both"
+        if program_filter in {"IOP", "EVAL"}:
+            appointments = [a for a in appointments if a.get("program_type", "IOP") == program_filter]
+
+        if not appointments:
+            canvas.create_text(16, 20, anchor="w", text="No appointments scheduled for this view/filter.", fill="#003049", font=("Segoe UI", 11, "bold"))
+            return
+
+        mode = self.grid_mode_var.get() if hasattr(self, "grid_mode_var") else "Patient Grid"
+        if mode == "Room Grid":
+            axis_labels = sorted({a.get("room", "") for a in appointments if a.get("room")})
+            label_prefix = "Room"
+        elif mode == "Provider Grid":
+            axis_labels = sorted({a.get("provider", "") for a in appointments if a.get("provider")})
+            label_prefix = "Provider"
+        else:
+            axis_labels = sorted({pid for a in appointments for pid in a.get("patients", [])}, key=lambda x: (x[:1], int(x[1:]) if x[1:].isdigit() else x))
+            label_prefix = "Patient"
+
+        if not axis_labels:
+            canvas.create_text(16, 20, anchor="w", text="No axis labels available for current mode.", fill="#003049", font=("Segoe UI", 11, "bold"))
             return
 
         time_col_w, header_h, row_h, patient_col_w = 85, 42, 22, 180
-        col_pairs = [(d, p) for d in ordered_dates for p in patient_labels]
+        col_pairs = [(d, p) for d in ordered_dates for p in axis_labels]
         total_w = time_col_w + len(col_pairs) * patient_col_w
         total_h = header_h + len(minutes) * row_h
         canvas.config(scrollregion=(0, 0, total_w, total_h))
@@ -1621,7 +1725,7 @@ class SchedulerDesktopApp:
             x0 = time_col_w + idx * patient_col_w
             x1 = x0 + patient_col_w
             canvas.create_rectangle(x0, 0, x1, header_h, fill="#1d3557", outline="#f1faee")
-            canvas.create_text((x0 + x1) // 2, header_h // 2, text=f"{date_key}\nPatient {pid}", fill="white", font=("Segoe UI", 8, "bold"))
+            canvas.create_text((x0 + x1) // 2, header_h // 2, text=f"{date_key}\n{label_prefix} {pid}", fill="white", font=("Segoe UI", 8, "bold"))
 
         for row_idx, minute in enumerate(minutes):
             y0 = header_h + row_idx * row_h
@@ -1640,8 +1744,15 @@ class SchedulerDesktopApp:
             end_idx = min(len(minutes), (appt["end"] - GRID_START_MINUTE) // GRID_SLOT_MINUTES)
             if end_idx <= start_idx:
                 continue
-            for pid in appt["patients"]:
-                pair = (appt["date_key"], pid)
+            if mode == "Room Grid":
+                keys = [appt.get("room", "")]
+            elif mode == "Provider Grid":
+                keys = [appt.get("provider", "")]
+            else:
+                keys = list(appt.get("patients", []))
+
+            for axis_key in keys:
+                pair = (appt["date_key"], axis_key)
                 if pair not in pair_index:
                     continue
                 col_idx = pair_index[pair]
@@ -1654,7 +1765,7 @@ class SchedulerDesktopApp:
                 outline = "#d00000" if self.selected_request_id and appt["request_id"] == self.selected_request_id else "#495057"
                 tags = ("appointment", f"req:{appt['request_id']}")
                 canvas.create_rectangle(x0, y0, x1, y1, fill=color, outline=outline, width=width, tags=tags)
-                text = f"{appt['discipline']}\n{appt['room']}\n{appt['provider']}"
+                text = f"{appt['discipline']}\n{appt['room']}\n{appt['provider']}\n{appt.get('program_type','IOP')}"
                 canvas.create_text((x0 + x1) // 2, (y0 + y1) // 2, text=text, fill="#1b263b", font=("Segoe UI", 8), justify="center", tags=tags)
                 used_disciplines.add(appt["discipline"])
 
@@ -1919,6 +2030,7 @@ class SchedulerDesktopApp:
         mode = self.appt_mode_var.get().strip().lower()
         discipline = self.appt_discipline_var.get().strip()
         date_key = self.appt_date_var.get().strip()
+        program_type = self.appt_program_var.get().strip() or ("EVAL" if patient_id.startswith("E") else "IOP")
 
         if date_key not in profile.get("planning_dates", []):
             raise ValueError("Appointment date must be within current planning dates")
@@ -1960,6 +2072,7 @@ class SchedulerDesktopApp:
                     raise ValueError("Conflict: patient already has an overlapping appointment")
 
         req_id = f"appt_{len(profile.get('requests', [])) + 1}"
+        appointment_id = f"appt_{uuid.uuid4().hex[:12]}"
         profile["requests"].append(
             {
                 "id": req_id,
@@ -1972,7 +2085,11 @@ class SchedulerDesktopApp:
                 "group_key": None,
                 "label": f"{discipline} (Patient {patient_id})",
                 "provider_id": provider_id,
+                "provider_name": provider_name,
                 "room_id": room_id,
+                "program_type": program_type,
+                "soft_locked": False,
+                "appointment_id": appointment_id,
             }
         )
 
@@ -2029,7 +2146,7 @@ class SchedulerDesktopApp:
         raw = [p.strip() for p in self.auto_subset_patients_var.get().split(",") if p.strip()]
         for pid in raw:
             if pid not in PATIENT_ID_CHOICES:
-                raise ValueError(f"Patient ID '{pid}' must be in range 1-99")
+                raise ValueError(f"Patient ID '{pid}' must be in set I1-I30 or E1-E10")
         return raw
 
     def add_auto_condition(self) -> None:
@@ -2233,10 +2350,32 @@ class SchedulerDesktopApp:
             "rooms": build_room_records(self.room_rules),
         }
 
-    def _update_after_auto_generation(self, profile_template: Dict[str, Any], result: Dict[str, Any]) -> None:
+    def _update_after_auto_generation(self, profile_template: Dict[str, Any], result: Dict[str, Any], default_program_type: str = "IOP") -> None:
+        request_lookup = {r.get("id"): r for r in result.get("requests", [])}
+        generated_requests: List[Dict[str, Any]] = []
+        for rid, assignment in result.get("assignments", {}).items():
+            src = request_lookup.get(rid, {})
+            generated_requests.append(
+                {
+                    "id": rid,
+                    "appointment_id": src.get("appointment_id") or f"appt_{uuid.uuid4().hex[:12]}",
+                    "patient_ids": list(src.get("patient_ids", [])),
+                    "discipline": src.get("discipline", assignment.get("label", "Session")),
+                    "duration_minutes": int(assignment.get("end_minute", 0)) - int(assignment.get("start_minute", 0)),
+                    "mode": src.get("mode", assignment.get("mode", "individual")),
+                    "date_key": src.get("date_key", assignment.get("date_key")),
+                    "preferred_window": {"start_minute": int(assignment.get("start_minute", 0)), "end_minute": int(assignment.get("end_minute", 0))},
+                    "group_key": src.get("group_key"),
+                    "label": assignment.get("label") or src.get("label") or src.get("discipline", "Session"),
+                    "provider_id": assignment.get("provider_id"),
+                    "room_id": assignment.get("room_id"),
+                    "program_type": src.get("program_type", default_program_type),
+                    "soft_locked": bool(src.get("soft_locked", False)),
+                }
+            )
         profile = {
             **profile_template,
-            "requests": result.get("requests", []),
+            "requests": generated_requests,
         }
         self.loaded_profile = profile
         self.last_result = {"assignments": result.get("assignments", {}), "room_timeline": {}}
@@ -2257,6 +2396,7 @@ class SchedulerDesktopApp:
             requirements=self.auto_conditions,
             solver_limits=self._solver_limits_from_ui(),
         )
+        self._push_manual_undo_snapshot("Generate IOP schedule")
         self._update_after_auto_generation(profile_template, result)
 
         if not result.get("ok"):
@@ -2292,6 +2432,7 @@ class SchedulerDesktopApp:
             existing_assignments=existing,
             solver_limits=self._solver_limits_from_ui(),
         )
+        self._push_manual_undo_snapshot("Auto reconfigure IOP")
         self._update_after_auto_generation(profile_template, result)
         diff = result.get("diff", {})
         self._set_text(
@@ -2321,6 +2462,136 @@ class SchedulerDesktopApp:
         lines = ["Top bottlenecks:"] + [f"- {issue}" for issue in report.get("issues", [])[:25]]
         self._set_text(self.auto_report_text, "\n".join(lines))
         self.status_var.set("Status: Bottleneck report generated")
+
+    def _existing_assignment_map(self) -> Dict[str, Dict[str, Any]]:
+        return dict((self.last_result or {}).get("assignments", {}))
+
+    def _soft_locked_request_ids(self) -> List[str]:
+        if not self.loaded_profile:
+            return []
+        return [r.get("id") for r in self.loaded_profile.get("requests", []) if r.get("soft_locked") and r.get("id")]
+
+    def generate_eval_schedule(self) -> None:
+        profile_template = self._build_auto_profile_template()
+        # ensure synthetic no-provider exists for eval group
+        provider_ids = {p.get("id") for p in profile_template.get("providers", [])}
+        if "NO_PROVIDER_EVAL_GROUP" not in provider_ids:
+            profile_template["providers"].append(
+                {
+                    "id": "NO_PROVIDER_EVAL_GROUP",
+                    "name": "EVAL Group (No Provider)",
+                    "disciplines": ["Evaluation Group"],
+                    "templates": [{"weekday": wd, "windows": [{"start_minute": GRID_START_MINUTE, "end_minute": GRID_END_MINUTE}]} for wd in range(5)],
+                    "exceptions": [],
+                    "allowed_rooms": ["Conference Room"],
+                }
+            )
+        start = parse_date_parts(self.eval_start_year_var.get(), self.eval_start_month_var.get(), self.eval_start_day_var.get())
+        result = generate_eval_schedule(
+            profile_template=profile_template,
+            cohort_start=start,
+            cohort_type=self.eval_cohort_var.get(),
+            eval_patient_count=int(self.eval_patient_count_var.get()),
+            group_duration_minutes=int(self.eval_group_duration_var.get()),
+            group_start_time=parse_time_input(self.eval_group_start_var.get()),
+            art_therapy_group=bool(self.eval_art_group_var.get()),
+            previous_assignments=self._existing_assignment_map(),
+            solver_limits=self._solver_limits_from_ui(),
+            locked_request_ids=self._soft_locked_request_ids(),
+        )
+        self._push_manual_undo_snapshot("Generate EVAL schedule")
+        self._update_after_auto_generation(profile_template, result, default_program_type="EVAL")
+        lines = [
+            "EVAL generation completed." if result.get("ok") else "EVAL generation failed.",
+            f"Assignments: {len(result.get('assignments', {}))}",
+            f"Moved: {result.get('diff', {}).get('moved', 0)} | Added: {result.get('diff', {}).get('added', 0)}",
+        ]
+        if result.get("bottlenecks"):
+            lines.append("Bottlenecks:")
+            lines.extend(f"- {b['date_key']} {b['requirement_id']}: {b['reason']}" for b in result.get("bottlenecks", [])[:10])
+        self._set_text(self.eval_report_text, "\n".join(lines))
+        self.status_var.set("Status: EVAL generation complete" if result.get("ok") else "Status: EVAL generation failed")
+
+    def generate_combined_schedule(self) -> None:
+        if not self.auto_conditions:
+            raise ValueError("Add at least one IOP requirement before combined generation")
+        profile_template = self._build_auto_profile_template()
+        existing = self._existing_assignment_map()
+        soft_locked_ids = self._soft_locked_request_ids()
+
+        iop_result = generate_three_week_schedule(
+            profile_template=profile_template,
+            requirements=self.auto_conditions,
+            previous_assignments=existing,
+            solver_limits=self._solver_limits_from_ui(),
+            locked_request_ids=soft_locked_ids,
+        )
+
+        start = parse_date_parts(self.eval_start_year_var.get(), self.eval_start_month_var.get(), self.eval_start_day_var.get())
+        eval_result = generate_eval_schedule(
+            profile_template=profile_template,
+            cohort_start=start,
+            cohort_type=self.eval_cohort_var.get(),
+            eval_patient_count=int(self.eval_patient_count_var.get()),
+            group_duration_minutes=int(self.eval_group_duration_var.get()),
+            group_start_time=parse_time_input(self.eval_group_start_var.get()),
+            art_therapy_group=bool(self.eval_art_group_var.get()),
+            previous_assignments={**existing, **iop_result.get("assignments", {})},
+            solver_limits=self._solver_limits_from_ui(),
+            locked_request_ids=soft_locked_ids,
+        )
+
+        merged_requests = list(iop_result.get("requests", [])) + list(eval_result.get("requests", []))
+        merged_assignments = {**iop_result.get("assignments", {}), **eval_result.get("assignments", {})}
+        merged_result = {
+            "ok": bool(iop_result.get("ok")) and bool(eval_result.get("ok")),
+            "requests": merged_requests,
+            "assignments": merged_assignments,
+            "bottlenecks": list(iop_result.get("bottlenecks", [])) + list(eval_result.get("bottlenecks", [])),
+            "diff": {
+                "unchanged": iop_result.get("diff", {}).get("unchanged", 0) + eval_result.get("diff", {}).get("unchanged", 0),
+                "moved": iop_result.get("diff", {}).get("moved", 0) + eval_result.get("diff", {}).get("moved", 0),
+                "added": iop_result.get("diff", {}).get("added", 0) + eval_result.get("diff", {}).get("added", 0),
+                "removed": iop_result.get("diff", {}).get("removed", 0) + eval_result.get("diff", {}).get("removed", 0),
+                "by_date": {},
+            },
+        }
+        self._push_manual_undo_snapshot("Generate combined schedule")
+        self._update_after_auto_generation(profile_template, merged_result, default_program_type="IOP")
+        self._set_text(
+            self.eval_report_text,
+            "Combined generation complete.\n"
+            f"IOP ok={iop_result.get('ok')} EVAL ok={eval_result.get('ok')}\n"
+            f"Moved={merged_result['diff']['moved']} Added={merged_result['diff']['added']}\n"
+            f"Soft-locked considered: {len(soft_locked_ids)}",
+        )
+        self.status_var.set("Status: Combined generation completed")
+
+    def import_existing_schedule_json(self) -> None:
+        path_raw = self.filedialog.askopenfilename(title="Import schedule JSON", filetypes=[("JSON files", "*.json")])
+        if not path_raw:
+            return
+        payload = json.loads(Path(path_raw).read_text(encoding="utf-8"))
+        incoming = payload.get("requests") if isinstance(payload, dict) else []
+        if not isinstance(incoming, list):
+            raise ValueError("JSON must contain a top-level 'requests' list")
+        profile = self._require_profile()
+        imported = []
+        for item in incoming:
+            if not isinstance(item, dict):
+                continue
+            req = dict(item)
+            req.setdefault("id", f"import_{uuid.uuid4().hex[:10]}")
+            req.setdefault("appointment_id", req["id"])
+            req.setdefault("program_type", "EVAL" if any(str(pid).startswith("E") for pid in req.get("patient_ids", [])) else "IOP")
+            req["soft_locked"] = True
+            imported.append(req)
+        profile.setdefault("requests", []).extend(imported)
+        self.last_result = build_live_result_from_profile(profile)
+        self._render_patient_grid(profile, self.last_result)
+        self._refresh_profile_preview()
+        self._set_text(self.eval_report_text, f"Imported {len(imported)} appointments as soft-locked.")
+        self.status_var.set("Status: Imported existing schedule")
 
     def save_current_profile(self) -> None:
         profile = self._require_profile()
