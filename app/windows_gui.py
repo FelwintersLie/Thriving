@@ -5,6 +5,7 @@ import json
 import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+import threading
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -34,6 +35,12 @@ from app.profile_io import load_profile, save_profile, validate_profile
 from app.provider_catalog import normalize_provider_catalog, provider_is_available
 from app.room_rules import room_is_available
 from app.windows_program import save_json
+from app.schedule_exports import (
+    build_schedule_layout_model,
+    draw_layout_on_tk_canvas,
+    export_layout_to_pptx,
+    render_layout_to_png,
+)
 
 DISCIPLINES = [
     "Primary Care",
@@ -556,6 +563,8 @@ class SchedulerDesktopApp:
         ttk.Label(view_controls, text="Program Filter").pack(side="left", padx=(10, 0))
         ttk.Combobox(view_controls, textvariable=self.program_filter_var, values=["Both", "IOP", "EVAL"], state="readonly", width=10).pack(side="left", padx=4)
         ttk.Button(view_controls, text="Apply View", command=lambda: self._safe_action(self.refresh_current_grid_view)).pack(side="left", padx=8)
+        ttk.Button(view_controls, text="Export PNG (Current View)", command=lambda: self._safe_action(self.export_view_as_png)).pack(side="left", padx=6)
+        ttk.Button(view_controls, text="Export PPTX (Current Date)", command=lambda: self._safe_action(self.export_view_as_pptx)).pack(side="left", padx=6)
 
         self._build_auto_generator_tab(auto_tab)
         self._build_eval_generator_tab(eval_tab)
@@ -1650,16 +1659,9 @@ class SchedulerDesktopApp:
         if hasattr(self, "provider_preview_canvas"):
             self.render_provider_availability_preview()
 
-    def _render_patient_grid(self, profile: Dict[str, Any], result: Dict[str, Any]) -> None:
-        canvas = self.grid_canvas
-        canvas.delete("all")
-        minutes = _grid_minutes()
-
+    def _collect_appointments_for_grid(self, profile: Dict[str, Any], result: Dict[str, Any]) -> List[Dict[str, Any]]:
         request_map = {r["id"]: r for r in profile.get("requests", []) if "id" in r}
-        appointments = []
-        patient_ids = set()
-        date_keys_in_use = set()
-
+        appointments: List[Dict[str, Any]] = []
         for assignment in result.get("assignments", {}).values():
             req = request_map.get(assignment.get("request_id", ""), {})
             date_key = req.get("date_key") or assignment.get("date_key")
@@ -1681,96 +1683,102 @@ class SchedulerDesktopApp:
                     "program_type": req.get("program_type", assignment.get("program_type", "IOP")),
                 }
             )
-            patient_ids.update(pids)
-            date_keys_in_use.add(date_key)
+        return appointments
 
-        planning_dates = profile.get("planning_dates", [])
-        ordered_dates = [d for d in planning_dates if d in date_keys_in_use] + sorted(date_keys_in_use.difference(planning_dates))
-        if not ordered_dates:
-            ordered_dates = planning_dates[:]
+    def _build_current_grid_layout(self, profile: Dict[str, Any], result: Dict[str, Any], visible_dates: List[str] | None = None) -> Dict[str, Any]:
+        appointments = self._collect_appointments_for_grid(profile, result)
+        return build_schedule_layout_model(
+            appointments,
+            profile.get("planning_dates", []),
+            DISCIPLINE_COLORS,
+            grid_mode=self.grid_mode_var.get() if hasattr(self, "grid_mode_var") else "Patient Grid",
+            program_filter=self.program_filter_var.get() if hasattr(self, "program_filter_var") else "Both",
+            selected_request_id=self.selected_request_id,
+            visible_dates=visible_dates,
+        )
 
-        program_filter = self.program_filter_var.get() if hasattr(self, "program_filter_var") else "Both"
-        if program_filter in {"IOP", "EVAL"}:
-            appointments = [a for a in appointments if a.get("program_type", "IOP") == program_filter]
-
-        if not appointments:
-            canvas.create_text(16, 20, anchor="w", text="No appointments scheduled for this view/filter.", fill="#003049", font=("Segoe UI", 11, "bold"))
-            return
-
-        mode = self.grid_mode_var.get() if hasattr(self, "grid_mode_var") else "Patient Grid"
-        if mode == "Room Grid":
-            axis_labels = sorted({a.get("room", "") for a in appointments if a.get("room")})
-            label_prefix = "Room"
-        elif mode == "Provider Grid":
-            axis_labels = sorted({a.get("provider", "") for a in appointments if a.get("provider")})
-            label_prefix = "Provider"
-        else:
-            axis_labels = sorted({pid for a in appointments for pid in a.get("patients", [])}, key=lambda x: (x[:1], int(x[1:]) if x[1:].isdigit() else x))
-            label_prefix = "Patient"
-
-        if not axis_labels:
-            canvas.create_text(16, 20, anchor="w", text="No axis labels available for current mode.", fill="#003049", font=("Segoe UI", 11, "bold"))
-            return
-
-        time_col_w, header_h, row_h, patient_col_w = 85, 42, 22, 180
-        col_pairs = [(d, p) for d in ordered_dates for p in axis_labels]
-        total_w = time_col_w + len(col_pairs) * patient_col_w
-        total_h = header_h + len(minutes) * row_h
-        canvas.config(scrollregion=(0, 0, total_w, total_h))
-
-        canvas.create_rectangle(0, 0, time_col_w, header_h, fill="#0b4f6c", outline="#0b4f6c")
-        canvas.create_text(time_col_w // 2, header_h // 2, text="Time", fill="white", font=("Segoe UI", 10, "bold"))
-
-        for idx, (date_key, pid) in enumerate(col_pairs):
-            x0 = time_col_w + idx * patient_col_w
-            x1 = x0 + patient_col_w
-            canvas.create_rectangle(x0, 0, x1, header_h, fill="#1d3557", outline="#f1faee")
-            canvas.create_text((x0 + x1) // 2, header_h // 2, text=f"{date_key}\n{label_prefix} {pid}", fill="white", font=("Segoe UI", 8, "bold"))
-
-        for row_idx, minute in enumerate(minutes):
-            y0 = header_h + row_idx * row_h
-            y1 = y0 + row_h
-            canvas.create_rectangle(0, y0, time_col_w, y1, fill="#f8f9fa" if row_idx % 2 == 0 else "#e9ecef", outline="#adb5bd")
-            canvas.create_text(time_col_w // 2, (y0 + y1) // 2, text=_to_ampm(minute), fill="#1b263b", font=("Segoe UI", 8))
-            for col_idx in range(len(col_pairs)):
-                x0 = time_col_w + col_idx * patient_col_w
-                x1 = x0 + patient_col_w
-                canvas.create_rectangle(x0, y0, x1, y1, fill="#ffffff", outline="#dee2e6")
-
-        pair_index = {pair: idx for idx, pair in enumerate(col_pairs)}
-        used_disciplines = set()
-        for appt in appointments:
-            start_idx = max(0, (appt["start"] - GRID_START_MINUTE) // GRID_SLOT_MINUTES)
-            end_idx = min(len(minutes), (appt["end"] - GRID_START_MINUTE) // GRID_SLOT_MINUTES)
-            if end_idx <= start_idx:
-                continue
-            if mode == "Room Grid":
-                keys = [appt.get("room", "")]
-            elif mode == "Provider Grid":
-                keys = [appt.get("provider", "")]
-            else:
-                keys = list(appt.get("patients", []))
-
-            for axis_key in keys:
-                pair = (appt["date_key"], axis_key)
-                if pair not in pair_index:
-                    continue
-                col_idx = pair_index[pair]
-                x0 = time_col_w + col_idx * patient_col_w + 1
-                x1 = x0 + patient_col_w - 2
-                y0 = header_h + start_idx * row_h + 1
-                y1 = header_h + end_idx * row_h - 1
-                color = DISCIPLINE_COLORS.get(appt["discipline"], "#ffb3c1")
-                width = 3 if self.selected_request_id and appt["request_id"] == self.selected_request_id else 2
-                outline = "#d00000" if self.selected_request_id and appt["request_id"] == self.selected_request_id else "#495057"
-                tags = ("appointment", f"req:{appt['request_id']}")
-                canvas.create_rectangle(x0, y0, x1, y1, fill=color, outline=outline, width=width, tags=tags)
-                text = f"{appt['discipline']}\n{appt['room']}\n{appt['provider']}\n{appt.get('program_type','IOP')}"
-                canvas.create_text((x0 + x1) // 2, (y0 + y1) // 2, text=text, fill="#1b263b", font=("Segoe UI", 8), justify="center", tags=tags)
-                used_disciplines.add(appt["discipline"])
-
+    def _render_patient_grid(self, profile: Dict[str, Any], result: Dict[str, Any]) -> None:
+        layout = self._build_current_grid_layout(profile, result)
+        draw_layout_on_tk_canvas(self.grid_canvas, layout)
+        legends = layout.get("legend_disciplines", [])
         self.legend_var.set(
-            "Legend: " + " | ".join(sorted(used_disciplines)) if used_disciplines else "Legend: No assigned sessions"
+            "Legend: " + " | ".join(legends) if legends else "Legend: No assigned sessions"
+        )
+
+    def _run_in_background(self, worker, on_success, on_error) -> None:
+        def wrapped() -> None:
+            try:
+                value = worker()
+            except Exception as exc:  # noqa: BLE001
+                self.root.after(0, lambda: on_error(exc))
+                return
+            self.root.after(0, lambda: on_success(value))
+
+        threading.Thread(target=wrapped, daemon=True).start()
+
+    def export_view_as_png(self) -> None:
+        profile = self._require_profile()
+        if not self.last_result:
+            self.messagebox.showinfo("Export", "Add or generate a schedule first.")
+            return
+        selected_date = self.appt_date_var.get().strip() if hasattr(self, "appt_date_var") else ""
+        date_part = selected_date or "current-view"
+        mode_part = (self.grid_mode_var.get() if hasattr(self, "grid_mode_var") else "Patient Grid").replace(" ", "_").lower()
+        path_raw = self.filedialog.asksaveasfilename(
+            title="Export current schedule view as PNG",
+            defaultextension=".png",
+            initialfile=f"schedule_{date_part}_{mode_part}.png",
+            filetypes=[("PNG files", "*.png")],
+        )
+        if not path_raw:
+            return
+        out_path = Path(path_raw)
+        visible = [selected_date] if selected_date else None
+        layout = self._build_current_grid_layout(profile, self.last_result, visible_dates=visible)
+        self.status_var.set("Status: Exporting PNG...")
+
+        def worker() -> Path:
+            render_layout_to_png(layout, out_path)
+            return out_path
+
+        self._run_in_background(
+            worker,
+            lambda p: (self.status_var.set(f"Status: Exported PNG to {p}"), self.messagebox.showinfo("Export complete", f"PNG exported to:\n{p}")),
+            lambda e: self.messagebox.showerror("PNG export failed", str(e)),
+        )
+
+    def export_view_as_pptx(self) -> None:
+        profile = self._require_profile()
+        if not self.last_result:
+            self.messagebox.showinfo("Export", "Add or generate a schedule first.")
+            return
+        selected_date = self.appt_date_var.get().strip() if hasattr(self, "appt_date_var") else ""
+        mode = self.grid_mode_var.get() if hasattr(self, "grid_mode_var") else "Patient Grid"
+        program_filter = self.program_filter_var.get() if hasattr(self, "program_filter_var") else "Both"
+        date_part = selected_date or "current-view"
+        mode_part = mode.replace(" ", "_").lower()
+        path_raw = self.filedialog.asksaveasfilename(
+            title="Export current schedule view as PowerPoint",
+            defaultextension=".pptx",
+            initialfile=f"schedule_{date_part}_{mode_part}.pptx",
+            filetypes=[("PowerPoint", "*.pptx")],
+        )
+        if not path_raw:
+            return
+        out_path = Path(path_raw)
+        visible = [selected_date] if selected_date else None
+        layout = self._build_current_grid_layout(profile, self.last_result, visible_dates=visible)
+        title = f"Schedule {date_part} | {mode} | {program_filter}"
+        self.status_var.set("Status: Exporting PowerPoint...")
+
+        def worker() -> Path:
+            export_layout_to_pptx(layout, out_path, title)
+            return out_path
+
+        self._run_in_background(
+            worker,
+            lambda p: (self.status_var.set(f"Status: Exported PowerPoint to {p}"), self.messagebox.showinfo("Export complete", f"PowerPoint exported to:\n{p}")),
+            lambda e: self.messagebox.showerror("PowerPoint export failed", str(e)),
         )
 
     def _on_grid_right_click(self, event) -> None:

@@ -259,3 +259,19 @@ Recommended first test tonight:
   - Program filter (`IOP` / `EVAL` / `Both`),
   - Grid mode switch (`Patient Grid` / `Room Grid` / `Provider Grid`).
 - Import existing schedules via EVAL tab (**Import Existing Schedule JSON**); imported appointments are marked `soft_locked=true` by default.
+
+### Export Current Schedule View (PNG + PowerPoint)
+
+- In **Manual Scheduler**, use:
+  - **Export PNG (Current View)** to save the currently selected date + active grid mode + program filter as a deterministic rendered PNG.
+  - **Export PPTX (Current Date)** to export the same layout into a PowerPoint slide with title metadata (`date | view mode | filter`).
+- Export rendering uses the same shared layout model as the on-screen canvas, preserving:
+  - merged appointment blocks by duration,
+  - time/header geometry and column layout,
+  - discipline colors,
+  - appointment text (`discipline`, `room`, `provider`, `program`).
+- Exports run in a background thread to keep the UI responsive.
+- Dependency notes (if not already installed):
+  - `python3 -m pip install Pillow` for PNG export
+  - `python3 -m pip install python-pptx` for PPTX export
+
