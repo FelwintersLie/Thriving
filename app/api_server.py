@@ -68,16 +68,30 @@ def _patients(raw_list: List[Dict[str, Any]]) -> List[Patient]:
     return patients
 
 
+def _room_windows(raw_windows: List[Dict[str, Any]]) -> List[TimeWindow]:
+    return [_time_window(w) for w in raw_windows or []]
+
+
 def _rooms(raw_list: List[Dict[str, Any]]) -> List[Room]:
-    return [
-        Room(
-            id=raw["id"],
-            name=raw["name"],
-            capacity=int(raw["capacity"]),
-            allowed_disciplines=set(raw["allowed_disciplines"]),
+    rooms: List[Room] = []
+    for raw in raw_list:
+        unavailable_weekly = {int(k): _room_windows(v) for k, v in (raw.get("unavailable_weekly") or {}).items()}
+        unavailable_dates = {str(k): _room_windows(v) for k, v in (raw.get("unavailable_dates") or {}).items()}
+        available_only_weekly = {int(k): _room_windows(v) for k, v in (raw.get("available_only_weekly") or {}).items()}
+        available_only_dates = {str(k): _room_windows(v) for k, v in (raw.get("available_only_dates") or {}).items()}
+        rooms.append(
+            Room(
+                id=raw["id"],
+                name=raw["name"],
+                capacity=int(raw["capacity"]),
+                allowed_disciplines=set(raw["allowed_disciplines"]),
+                unavailable_weekly=unavailable_weekly,
+                unavailable_dates=unavailable_dates,
+                available_only_weekly=available_only_weekly,
+                available_only_dates=available_only_dates,
+            )
         )
-        for raw in raw_list
-    ]
+    return rooms
 
 
 def _requests(raw_list: List[Dict[str, Any]], date_key: str) -> List[SessionRequest]:

@@ -86,6 +86,26 @@ class Room:
     name: str
     capacity: int
     allowed_disciplines: set[str]
+    unavailable_weekly: Dict[int, List[TimeWindow]] = field(default_factory=dict)
+    unavailable_dates: Dict[str, List[TimeWindow]] = field(default_factory=dict)
+    available_only_weekly: Dict[int, List[TimeWindow]] = field(default_factory=dict)
+    available_only_dates: Dict[str, List[TimeWindow]] = field(default_factory=dict)
+
+    def is_available(self, date_key: str, weekday: int, start: int, end: int) -> bool:
+        for window in self.unavailable_weekly.get(weekday, []):
+            if not (end <= window.start_minute or start >= window.end_minute):
+                return False
+        for window in self.unavailable_dates.get(date_key, []):
+            if not (end <= window.start_minute or start >= window.end_minute):
+                return False
+
+        weekly_allowed = self.available_only_weekly.get(weekday, [])
+        if weekly_allowed and not any(w.start_minute <= start and end <= w.end_minute for w in weekly_allowed):
+            return False
+        date_allowed = self.available_only_dates.get(date_key, [])
+        if date_allowed and not any(w.start_minute <= start and end <= w.end_minute for w in date_allowed):
+            return False
+        return True
 
 
 @dataclass
@@ -174,12 +194,16 @@ class ScheduleEngine:
                 continue
 
             options: List[Assignment] = []
+            rejection_counts = {"provider_discipline": 0, "provider_specific": 0, "room_discipline": 0, "room_rules": 0, "patient": 0, "provider": 0}
             for provider in providers:
                 if req.discipline not in provider.disciplines:
+                    rejection_counts["provider_discipline"] += 1
                     continue
                 if req.provider_id and provider.id != req.provider_id:
+                    rejection_counts["provider_specific"] += 1
                     continue
                 if req.provider_ids and provider.id not in req.provider_ids:
+                    rejection_counts["provider_specific"] += 1
                     continue
 
                 for room in rooms:
@@ -188,6 +212,7 @@ class ScheduleEngine:
                     if provider.allowed_rooms and room.id not in provider.allowed_rooms:
                         continue
                     if req.discipline not in room.allowed_disciplines:
+                        rejection_counts["room_discipline"] += 1
                         continue
                     if len(req.patient_ids) > room.capacity:
                         continue
@@ -197,8 +222,13 @@ class ScheduleEngine:
                         if end > day_window.end_minute:
                             break
                         if not provider.is_available(date_key, weekday, start, end):
+                            rejection_counts["provider"] += 1
+                            continue
+                        if not room.is_available(date_key, weekday, start, end):
+                            rejection_counts["room_rules"] += 1
                             continue
                         if not all(patient_by_id[p].is_available(date_key, start, end) for p in req.patient_ids):
+                            rejection_counts["patient"] += 1
                             continue
 
                         label = req.label or f"{req.discipline.title()} {'Group' if req.mode == Mode.GROUP else 'Individual'}"
@@ -219,7 +249,11 @@ class ScheduleEngine:
                             )
 
             if not options:
-                raise UnschedulableError(f"No feasible options for request {req.id}")
+                reason = ", ".join(f"{k}={v}" for k, v in rejection_counts.items() if v > 0)
+                msg = f"No feasible options for request {req.id}"
+                if reason:
+                    msg += f" ({reason})"
+                raise UnschedulableError(msg)
             candidates[req.id] = options
 
         sorted_requests = sorted(requests, key=lambda r: len(candidates[r.id]))

@@ -229,3 +229,16 @@ Recommended first test tonight:
   - Requirement provider dropdowns pull from Provider Profiles.
   - `Any provider` + discipline only selects providers with matching profile discipline.
   - Solver respects provider availability and provider allowed-room constraints when generating assignments.
+
+
+### Room Availability Restrictions
+- Use the **Room Rules** tab to define room-level constraints that are enforced in both Manual Scheduler and Auto Generator.
+- Rule types:
+  - **unavailable**: room cannot be used during overlapping windows,
+  - **available-only**: room can only be used inside allowed windows.
+- Scopes:
+  - weekly templates (Mon-Fri, multiple windows/day),
+  - date-specific exceptions (`YYYY-MM-DD`, multiple windows/day).
+- Saved in `data/room_rules.json` and applied immediately.
+- Manual Scheduler blocks Add Appointment when selected room violates room rules.
+- Auto-generator treats room rules as hard constraints and includes room-rule rejection counts in infeasibility details.

@@ -20,14 +20,17 @@ from app.persistence import (
     load_last_profile,
     load_provider_catalog_entries,
     load_requirements_catalog,
+    load_room_rules,
     save_last_generated_schedule,
     save_last_profile,
     save_last_schedule,
     save_provider_catalog_entries,
     save_requirements_catalog,
+    save_room_rules,
 )
 from app.profile_io import load_profile, save_profile, validate_profile
 from app.provider_catalog import normalize_provider_catalog, provider_is_available
+from app.room_rules import room_is_available
 from app.windows_program import save_json
 
 DISCIPLINES = [
@@ -289,9 +292,38 @@ def build_provider_records_from_profiles(provider_profiles: List[Dict[str, Any]]
 
     return records
 
-def build_room_records() -> List[Dict[str, Any]]:
-    return [{"id": room, "name": room, "capacity": 10, "allowed_disciplines": list(DISCIPLINES)} for room in PREDEFINED_ROOMS]
+def build_room_records(room_rules: Dict[str, Any] | None = None) -> List[Dict[str, Any]]:
+    rules = room_rules or {"rooms": {}}
+    out: List[Dict[str, Any]] = []
+    for room in PREDEFINED_ROOMS:
+        rr = (rules.get("rooms", {}) or {}).get(room, {})
+        out.append(
+            {
+                "id": room,
+                "name": room,
+                "capacity": 10,
+                "allowed_disciplines": list(DISCIPLINES),
+                "unavailable_weekly": rr.get("unavailable_weekly", {}),
+                "unavailable_dates": _date_rule_list_to_map(rr.get("unavailable_dates", [])),
+                "available_only_weekly": rr.get("available_only_weekly", {}),
+                "available_only_dates": _date_rule_list_to_map(rr.get("available_only_dates", [])),
+            }
+        )
+    return out
 
+
+
+
+def _date_rule_list_to_map(items: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, int]]]:
+    by_date: Dict[str, List[Dict[str, int]]] = {}
+    for item in items or []:
+        date_key = str(item.get("date") or "").strip()
+        if not date_key:
+            continue
+        by_date.setdefault(date_key, []).append(
+            {"start_minute": int(item.get("start_minute", 0)), "end_minute": int(item.get("end_minute", 0))}
+        )
+    return by_date
 
 def build_patient_records(date_keys: List[str], day_start: int, day_end: int) -> List[Dict[str, Any]]:
     availability = {d: [{"start_minute": day_start, "end_minute": day_end}] for d in date_keys}
@@ -384,6 +416,7 @@ class SchedulerDesktopApp:
         )
         self.provider_catalog = [p["provider_name"] for p in self.provider_profiles]
         self._persist_provider_catalog()
+        self.room_rules = load_room_rules(PREDEFINED_ROOMS)
         self.last_generated_schedule = load_last_generated_schedule()
         self.last_result: Dict[str, Any] | None = None
         raw_conditions = load_requirements_catalog()
@@ -450,6 +483,9 @@ class SchedulerDesktopApp:
         provider_tab = ttk.Frame(notebook)
         notebook.add(provider_tab, text="Provider Profiles")
 
+        room_rules_tab = ttk.Frame(notebook)
+        notebook.add(room_rules_tab, text="Room Rules")
+
         upper = ttk.Panedwindow(manual_tab, orient=tk.HORIZONTAL)
         upper.pack(fill=tk.BOTH, expand=True, pady=(0, 8))
 
@@ -493,6 +529,7 @@ class SchedulerDesktopApp:
 
         self._build_auto_generator_tab(auto_tab)
         self._build_provider_profiles_tab(provider_tab)
+        self._build_room_rules_tab(room_rules_tab)
 
     def _build_auto_generator_tab(self, parent) -> None:
         ttk = self.ttk
@@ -753,6 +790,81 @@ class SchedulerDesktopApp:
         self.selected_provider_profile_id = ""
         self.refresh_provider_profile_list()
 
+    def _build_room_rules_tab(self, parent) -> None:
+        ttk = self.ttk
+        tk = self.tk
+        weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+        time_choices = military_time_choices()
+
+        wrap = ttk.Frame(parent, padding=8)
+        wrap.pack(fill="both", expand=True)
+        wrap.columnconfigure(0, weight=1)
+        wrap.columnconfigure(1, weight=2)
+        wrap.rowconfigure(0, weight=1)
+
+        left = ttk.Labelframe(wrap, text="Rooms", padding=8)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        right = ttk.Labelframe(wrap, text="Room Availability Restrictions", padding=8)
+        right.grid(row=0, column=1, sticky="nsew")
+
+        self.room_rule_list = tk.Listbox(left, height=24)
+        self.room_rule_list.pack(fill="both", expand=True)
+        self.room_rule_list.bind("<<ListboxSelect>>", self._on_room_rule_select)
+        for room in PREDEFINED_ROOMS:
+            self.room_rule_list.insert(tk.END, room)
+        if PREDEFINED_ROOMS:
+            self.room_rule_list.selection_set(0)
+            self.room_rule_selected_var = tk.StringVar(value=PREDEFINED_ROOMS[0])
+
+        ttk.Label(right, text="Room").grid(row=0, column=0, sticky="w")
+        ttk.Entry(right, textvariable=self.room_rule_selected_var, state="readonly", width=24).grid(row=0, column=1, sticky="w", padx=4)
+
+        ttk.Label(right, text="Discipline compatibility").grid(row=1, column=0, sticky="w")
+        ttk.Label(right, text="All configured disciplines", foreground="#6c757d").grid(row=1, column=1, sticky="w", padx=4)
+
+        self.room_rule_weekday_var = tk.StringVar(value="Monday")
+        self.room_rule_start_var = tk.StringVar(value="1100")
+        self.room_rule_end_var = tk.StringVar(value="1300")
+        self.room_rule_type_var = tk.StringVar(value="unavailable")
+
+        weekly = ttk.Labelframe(right, text="Weekly rules", padding=6)
+        weekly.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        ttk.Combobox(weekly, textvariable=self.room_rule_weekday_var, values=weekdays, state="readonly", width=12).grid(row=0, column=0, padx=2)
+        ttk.Combobox(weekly, textvariable=self.room_rule_start_var, values=time_choices, state="readonly", width=10).grid(row=0, column=1, padx=2)
+        ttk.Combobox(weekly, textvariable=self.room_rule_end_var, values=time_choices, state="readonly", width=10).grid(row=0, column=2, padx=2)
+        ttk.Combobox(weekly, textvariable=self.room_rule_type_var, values=["unavailable", "available-only"], state="readonly", width=14).grid(row=0, column=3, padx=2)
+        ttk.Button(weekly, text="Add Window", command=lambda: self._safe_action(self.add_room_weekly_rule)).grid(row=0, column=4, padx=4)
+        ttk.Button(weekly, text="Remove Window", command=lambda: self._safe_action(self.remove_room_weekly_rule)).grid(row=0, column=5, padx=4)
+        self.room_weekly_rules_list = tk.Listbox(weekly, height=6)
+        self.room_weekly_rules_list.grid(row=1, column=0, columnspan=6, sticky="ew", pady=(4, 0))
+
+        self.room_rule_date_var = tk.StringVar(value=date_to_key(datetime.utcnow().date()))
+        self.room_rule_date_start_var = tk.StringVar(value="1100")
+        self.room_rule_date_end_var = tk.StringVar(value="1300")
+        self.room_rule_date_type_var = tk.StringVar(value="unavailable")
+
+        dates = ttk.Labelframe(right, text="Date-specific exceptions", padding=6)
+        dates.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        ttk.Entry(dates, textvariable=self.room_rule_date_var, width=12).grid(row=0, column=0, padx=2)
+        ttk.Combobox(dates, textvariable=self.room_rule_date_start_var, values=time_choices, state="readonly", width=10).grid(row=0, column=1, padx=2)
+        ttk.Combobox(dates, textvariable=self.room_rule_date_end_var, values=time_choices, state="readonly", width=10).grid(row=0, column=2, padx=2)
+        ttk.Combobox(dates, textvariable=self.room_rule_date_type_var, values=["unavailable", "available-only"], state="readonly", width=14).grid(row=0, column=3, padx=2)
+        ttk.Button(dates, text="Add Exception", command=lambda: self._safe_action(self.add_room_date_rule)).grid(row=0, column=4, padx=4)
+        ttk.Button(dates, text="Remove Exception", command=lambda: self._safe_action(self.remove_room_date_rule)).grid(row=0, column=5, padx=4)
+        self.room_date_rules_list = tk.Listbox(dates, height=6)
+        self.room_date_rules_list.grid(row=1, column=0, columnspan=6, sticky="ew", pady=(4, 0))
+
+        self.room_rules_preview_canvas = tk.Canvas(right, width=620, height=180, bg="white", highlightthickness=1, highlightbackground="#ced4da")
+        self.room_rules_preview_canvas.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+
+        btns = ttk.Frame(right)
+        btns.grid(row=5, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        ttk.Button(btns, text="Save/Update", command=lambda: self._safe_action(self.save_room_rules)).pack(side="left", padx=4)
+        ttk.Button(btns, text="Revert", command=lambda: self._safe_action(self.revert_room_rules_editor)).pack(side="left", padx=4)
+        ttk.Button(btns, text="Clear rules for room", command=lambda: self._safe_action(self.clear_selected_room_rules)).pack(side="left", padx=4)
+
+        self.revert_room_rules_editor()
+
     def _build_form_panel(self, parent) -> None:
         ttk = self.ttk
 
@@ -905,7 +1017,7 @@ class SchedulerDesktopApp:
         day_end = int(day_window.get("end_minute", GRID_END_MINUTE))
         date_keys = profile.get("planning_dates") or [profile.get("date_key", date_to_key(datetime.utcnow().date()))]
 
-        profile["rooms"] = build_room_records()
+        profile["rooms"] = build_room_records(self.room_rules)
         provider_records = build_provider_records_from_profiles(self.provider_profiles, day_start, day_end)
         if not provider_records:
             provider_records = build_provider_records(self.provider_catalog, day_start, day_end)
@@ -1253,6 +1365,185 @@ class SchedulerDesktopApp:
                 y0 = header_h + start_slot * row_h + 1
                 y1 = header_h + end_slot * row_h - 1
                 canvas.create_rectangle(x0, y0, x1, y1, fill="#90e0ef", outline="#0077b6", width=2)
+
+    def _selected_room_name(self) -> str:
+        name = self.room_rule_selected_var.get().strip() if hasattr(self, "room_rule_selected_var") else ""
+        if not name:
+            raise ValueError("Select a room first")
+        return name
+
+    def _room_rule_bucket(self, room_name: str) -> Dict[str, Any]:
+        rooms = self.room_rules.setdefault("rooms", {})
+        if room_name not in rooms:
+            rooms[room_name] = {
+                "unavailable_weekly": {i: [] for i in range(5)},
+                "unavailable_dates": [],
+                "available_only_weekly": {i: [] for i in range(5)},
+                "available_only_dates": [],
+            }
+        return rooms[room_name]
+
+    def _on_room_rule_select(self, _event=None) -> None:
+        if not hasattr(self, "room_rule_list"):
+            return
+        selection = self.room_rule_list.curselection()
+        if not selection:
+            return
+        room_name = self.room_rule_list.get(selection[0])
+        self.room_rule_selected_var.set(room_name)
+        self.revert_room_rules_editor()
+
+    def _render_room_rules_preview(self, room_name: str) -> None:
+        canvas = self.room_rules_preview_canvas
+        canvas.delete("all")
+        room_bucket = self._room_rule_bucket(room_name)
+        day_start = parse_time_input(self.day_start_var.get()) if hasattr(self, "day_start_var") else GRID_START_MINUTE
+        day_end = parse_time_input(self.day_end_var.get()) if hasattr(self, "day_end_var") else GRID_END_MINUTE
+        preview = room_bucket.get("unavailable_weekly", {})
+
+        weekdays = ["Mon", "Tue", "Wed", "Thu", "Fri"]
+        left_w, header_h, row_h, col_w = 52, 24, 10, 110
+        slots = max(1, (day_end - day_start) // GRID_SLOT_MINUTES)
+        total_w = left_w + len(weekdays) * col_w
+        total_h = header_h + slots * row_h
+        canvas.config(scrollregion=(0, 0, total_w, total_h))
+
+        canvas.create_rectangle(0, 0, left_w, header_h, fill="#0b4f6c", outline="#0b4f6c")
+        for idx, wd in enumerate(weekdays):
+            x0 = left_w + idx * col_w
+            x1 = x0 + col_w
+            canvas.create_rectangle(x0, 0, x1, header_h, fill="#1d3557", outline="#f1faee")
+            canvas.create_text((x0 + x1) // 2, header_h // 2, text=wd, fill="white", font=("Segoe UI", 8, "bold"))
+
+        for slot in range(slots):
+            minute = day_start + slot * GRID_SLOT_MINUTES
+            y0 = header_h + slot * row_h
+            y1 = y0 + row_h
+            if slot % 4 == 0:
+                canvas.create_text(left_w // 2, (y0 + y1) // 2, text=f"{minute//60:02d}:{minute%60:02d}", font=("Segoe UI", 6), fill="#495057")
+            for idx in range(len(weekdays)):
+                x0 = left_w + idx * col_w
+                x1 = x0 + col_w
+                canvas.create_rectangle(x0, y0, x1, y1, fill="#ffffff", outline="#e9ecef")
+
+        for wd in range(5):
+            windows = preview.get(wd) or preview.get(str(wd), [])
+            for w in windows:
+                start = max(day_start, int(w.get("start_minute", day_start)))
+                end = min(day_end, int(w.get("end_minute", day_end)))
+                start_slot = max(0, (start - day_start) // GRID_SLOT_MINUTES)
+                end_slot = min(slots, (end - day_start) // GRID_SLOT_MINUTES)
+                if end_slot <= start_slot:
+                    continue
+                x0 = left_w + wd * col_w + 2
+                x1 = x0 + col_w - 4
+                y0 = header_h + start_slot * row_h + 1
+                y1 = header_h + end_slot * row_h - 1
+                canvas.create_rectangle(x0, y0, x1, y1, fill="#ffadad", outline="#d90429", width=2)
+
+    def revert_room_rules_editor(self) -> None:
+        room_name = self._selected_room_name()
+        bucket = self._room_rule_bucket(room_name)
+        self.room_weekly_rules_list.delete(0, self.tk.END)
+        weekdays = ["Mon", "Tue", "Wed", "Thu", "Fri"]
+        for wd in range(5):
+            for w in bucket.get("unavailable_weekly", {}).get(wd, []):
+                self.room_weekly_rules_list.insert(self.tk.END, f"{weekdays[wd]} unavailable {w['start_minute']//60:02d}:{w['start_minute']%60:02d}-{w['end_minute']//60:02d}:{w['end_minute']%60:02d}")
+            for w in bucket.get("available_only_weekly", {}).get(wd, []):
+                self.room_weekly_rules_list.insert(self.tk.END, f"{weekdays[wd]} available-only {w['start_minute']//60:02d}:{w['start_minute']%60:02d}-{w['end_minute']//60:02d}:{w['end_minute']%60:02d}")
+
+        self.room_date_rules_list.delete(0, self.tk.END)
+        for w in bucket.get("unavailable_dates", []):
+            self.room_date_rules_list.insert(self.tk.END, f"{w['date']} unavailable {w['start_minute']//60:02d}:{w['start_minute']%60:02d}-{w['end_minute']//60:02d}:{w['end_minute']%60:02d}")
+        for w in bucket.get("available_only_dates", []):
+            self.room_date_rules_list.insert(self.tk.END, f"{w['date']} available-only {w['start_minute']//60:02d}:{w['start_minute']%60:02d}-{w['end_minute']//60:02d}:{w['end_minute']%60:02d}")
+        self._render_room_rules_preview(room_name)
+
+    def add_room_weekly_rule(self) -> None:
+        room_name = self._selected_room_name()
+        weekday_map = {"Monday": 0, "Tuesday": 1, "Wednesday": 2, "Thursday": 3, "Friday": 4}
+        wd = weekday_map[self.room_rule_weekday_var.get()]
+        start = parse_time_input(self.room_rule_start_var.get())
+        end = parse_time_input(self.room_rule_end_var.get())
+        if end <= start:
+            raise ValueError("Window end must be after start")
+        bucket = self._room_rule_bucket(room_name)
+        key = "unavailable_weekly" if self.room_rule_type_var.get() == "unavailable" else "available_only_weekly"
+        weekly = bucket.setdefault(key, {i: [] for i in range(5)})
+        day_windows = weekly.setdefault(wd, [])
+        day_windows.append({"start_minute": start, "end_minute": end})
+        day_windows.sort(key=lambda w: (w["start_minute"], w["end_minute"]))
+        self.revert_room_rules_editor()
+
+    def remove_room_weekly_rule(self) -> None:
+        room_name = self._selected_room_name()
+        sel = self.room_weekly_rules_list.curselection()
+        if not sel:
+            raise ValueError("Select a weekly rule row")
+        token = self.room_weekly_rules_list.get(sel[0])
+        day = token.split()[0]
+        rule_type = token.split()[1]
+        hm = token.split()[2]
+        start_hm, end_hm = hm.split("-")
+        start = int(start_hm.split(":")[0]) * 60 + int(start_hm.split(":")[1])
+        end = int(end_hm.split(":")[0]) * 60 + int(end_hm.split(":")[1])
+        day_map = {"Mon": 0, "Tue": 1, "Wed": 2, "Thu": 3, "Fri": 4}
+        wd = day_map[day]
+        bucket = self._room_rule_bucket(room_name)
+        key = "unavailable_weekly" if rule_type == "unavailable" else "available_only_weekly"
+        weekly = bucket.setdefault(key, {i: [] for i in range(5)})
+        weekly[wd] = [w for w in weekly.get(wd, []) if not (int(w.get("start_minute", -1)) == start and int(w.get("end_minute", -1)) == end)]
+        self.revert_room_rules_editor()
+
+    def add_room_date_rule(self) -> None:
+        room_name = self._selected_room_name()
+        date_key = self.room_rule_date_var.get().strip()
+        date.fromisoformat(date_key)
+        start = parse_time_input(self.room_rule_date_start_var.get())
+        end = parse_time_input(self.room_rule_date_end_var.get())
+        if end <= start:
+            raise ValueError("Window end must be after start")
+        key = "unavailable_dates" if self.room_rule_date_type_var.get() == "unavailable" else "available_only_dates"
+        bucket = self._room_rule_bucket(room_name)
+        bucket.setdefault(key, []).append({"date": date_key, "start_minute": start, "end_minute": end})
+        bucket[key].sort(key=lambda x: (x["date"], x["start_minute"], x["end_minute"]))
+        self.revert_room_rules_editor()
+
+    def remove_room_date_rule(self) -> None:
+        room_name = self._selected_room_name()
+        sel = self.room_date_rules_list.curselection()
+        if not sel:
+            raise ValueError("Select a date rule row")
+        token = self.room_date_rules_list.get(sel[0])
+        parts = token.split()
+        date_key, rule_type, hm = parts[0], parts[1], parts[2]
+        start_hm, end_hm = hm.split("-")
+        start = int(start_hm.split(":")[0]) * 60 + int(start_hm.split(":")[1])
+        end = int(end_hm.split(":")[0]) * 60 + int(end_hm.split(":")[1])
+        key = "unavailable_dates" if rule_type == "unavailable" else "available_only_dates"
+        bucket = self._room_rule_bucket(room_name)
+        bucket[key] = [w for w in bucket.get(key, []) if not (w.get("date") == date_key and int(w.get("start_minute", -1)) == start and int(w.get("end_minute", -1)) == end)]
+        self.revert_room_rules_editor()
+
+    def save_room_rules(self) -> None:
+        self.room_rules = self.room_rules
+        save_room_rules(self.room_rules, valid_rooms=PREDEFINED_ROOMS)
+        if self.loaded_profile:
+            self._sync_profile_resources(self.loaded_profile)
+            self.last_result = build_live_result_from_profile(self.loaded_profile)
+            self._render_patient_grid(self.loaded_profile, self.last_result)
+        self.status_var.set("Status: Room availability rules saved")
+
+    def clear_selected_room_rules(self) -> None:
+        room_name = self._selected_room_name()
+        self.room_rules.setdefault("rooms", {})[room_name] = {
+            "unavailable_weekly": {i: [] for i in range(5)},
+            "unavailable_dates": [],
+            "available_only_weekly": {i: [] for i in range(5)},
+            "available_only_dates": [],
+        }
+        self.revert_room_rules_editor()
+        self.save_room_rules()
 
     def _refresh_profile_preview(self) -> None:
         if not self.loaded_profile:
@@ -1648,6 +1939,8 @@ class SchedulerDesktopApp:
         weekday = date.fromisoformat(date_key).weekday()
         if not provider_is_available(provider_profile, date_key=date_key, weekday=weekday, start_minute=start_minute, end_minute=end_minute):
             raise ValueError("Provider is unavailable for the selected date/time based on profile availability/exceptions")
+        if not room_is_available(self.room_rules, room_id=room_id, date_key=date_key, weekday=weekday, start_minute=start_minute, end_minute=end_minute):
+            raise ValueError("Selected room is unavailable for the chosen date/time based on Room Rules")
 
         for existing in profile.get("requests", []):
             if existing.get("date_key") != date_key:
@@ -1937,7 +2230,7 @@ class SchedulerDesktopApp:
             "providers": build_provider_records_from_profiles(self.provider_profiles, day_start, day_end)
             or build_provider_records(self.provider_catalog, day_start, day_end),
             "patients": build_patient_records(date_keys, day_start, day_end)[:patient_count],
-            "rooms": build_room_records(),
+            "rooms": build_room_records(self.room_rules),
         }
 
     def _update_after_auto_generation(self, profile_template: Dict[str, Any], result: Dict[str, Any]) -> None:

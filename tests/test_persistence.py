@@ -7,6 +7,7 @@ from app.persistence import (
     PROVIDER_CATALOG_PATH,
     LAST_GENERATED_SCHEDULE_PATH,
     PROVIDER_PROFILES_PATH,
+    ROOM_RULES_PATH,
     REQUIREMENTS_CATALOG_PATH,
     STATE_PATH,
     load_last_generated_schedule,
@@ -23,12 +24,14 @@ from app.persistence import (
     save_requirements_catalog,
     save_last_schedule,
     save_provider_catalog,
+    load_room_rules,
+    save_room_rules,
 )
 
 
 class PersistenceTests(unittest.TestCase):
     def tearDown(self):
-        for path in [STATE_PATH, LAST_PROFILE_PATH, LAST_SCHEDULE_PATH, PROVIDER_CATALOG_PATH, REQUIREMENTS_CATALOG_PATH, PROVIDER_PROFILES_PATH, LAST_GENERATED_SCHEDULE_PATH]:
+        for path in [STATE_PATH, LAST_PROFILE_PATH, LAST_SCHEDULE_PATH, PROVIDER_CATALOG_PATH, REQUIREMENTS_CATALOG_PATH, PROVIDER_PROFILES_PATH, LAST_GENERATED_SCHEDULE_PATH, ROOM_RULES_PATH]:
             if path.exists():
                 path.unlink()
         data_dir = Path("data")
@@ -94,6 +97,22 @@ class PersistenceTests(unittest.TestCase):
         self.assertEqual(loaded[0]["provider_name"], "Provider One")
         self.assertEqual(loaded[0]["availability_templates"][0]["weekday"], 0)
 
+
+    def test_room_rules_roundtrip(self):
+        rules = {
+            "rooms": {
+                "Room 1": {
+                    "unavailable_weekly": {"Monday": [{"start": 660, "end": 780}]},
+                    "unavailable_dates": [{"date": "2026-03-10", "start": 480, "end": 720}],
+                    "available_only_weekly": {},
+                    "available_only_dates": [],
+                }
+            }
+        }
+        save_room_rules(rules, valid_rooms=["Room 1", "Room 2"])
+        loaded = load_room_rules(["Room 1", "Room 2"])
+        self.assertIn("Room 1", loaded["rooms"])
+        self.assertEqual(loaded["rooms"]["Room 1"]["unavailable_weekly"][0][0]["start_minute"], 660)
 
 
 if __name__ == "__main__":

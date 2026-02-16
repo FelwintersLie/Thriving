@@ -5,12 +5,14 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from app.provider_catalog import normalize_provider_catalog
+from app.room_rules import normalize_room_rules
 
 
 STATE_PATH = Path("data") / "app_state.json"
 LAST_PROFILE_PATH = Path("data") / "last_profile.json"
 LAST_SCHEDULE_PATH = Path("data") / "last_schedule.json"
 PROVIDER_CATALOG_PATH = Path("data") / "provider_catalog.json"
+ROOM_RULES_PATH = Path("data") / "room_rules.json"
 
 REQUIREMENTS_CATALOG_PATH = Path("data") / "requirements_catalog.json"
 LAST_GENERATED_SCHEDULE_PATH = Path("data") / "last_generated_schedule.json"
@@ -182,3 +184,20 @@ def save_last_generated_schedule(schedule: Dict[str, Any]) -> Path:
     state["last_generated_schedule_file"] = str(LAST_GENERATED_SCHEDULE_PATH)
     save_state(state)
     return LAST_GENERATED_SCHEDULE_PATH
+
+
+def load_room_rules(valid_rooms: List[str]) -> Dict[str, Any]:
+    payload = _read_json(ROOM_RULES_PATH)
+    normalized = normalize_room_rules(payload, valid_rooms=valid_rooms)
+    if payload != normalized:
+        save_room_rules(normalized, valid_rooms=valid_rooms)
+    return normalized
+
+
+def save_room_rules(rules: Dict[str, Any], *, valid_rooms: List[str]) -> Path:
+    normalized = normalize_room_rules(rules, valid_rooms=valid_rooms)
+    _write_json(ROOM_RULES_PATH, normalized)
+    state = load_state()
+    state["room_rules_file"] = str(ROOM_RULES_PATH)
+    save_state(state)
+    return ROOM_RULES_PATH
