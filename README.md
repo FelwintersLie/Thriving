@@ -210,3 +210,22 @@ Recommended first test tonight:
   - **Section B: Provider Availability Rules** (weekly availability templates by provider + live Mon-Fri preview grid).
 - Requirement rows now support add/edit/duplicate/remove and include **sessions per week**.
 - Provider availability rules now persist in the provider catalog schema so updates are reused by the generator immediately.
+
+
+### Provider Profiles (single source of truth)
+- Use the **Provider Profiles** tab to manage all provider data used by both Manual Scheduler and Auto Generator.
+- Each profile stores:
+  - stable `provider_id` + editable `provider_name`,
+  - discipline,
+  - allowed rooms,
+  - weekly availability templates (Mon-Fri, multiple windows/day),
+  - date exceptions (`unavailable` or `added` windows).
+- Save/Update edits profiles in place and persists them to `data/provider_catalog.json`.
+- Manual Scheduler integration:
+  - Add Appointment provider dropdown now pulls from Provider Profiles.
+  - Selecting a provider auto-fills discipline (if profile discipline is set) and filters room options to allowed rooms.
+  - Appointment add validates provider availability using selected date + weekly template + exceptions.
+- Auto Generator integration:
+  - Requirement provider dropdowns pull from Provider Profiles.
+  - `Any provider` + discipline only selects providers with matching profile discipline.
+  - Solver respects provider availability and provider allowed-room constraints when generating assignments.

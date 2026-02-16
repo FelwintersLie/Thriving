@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List
 
+from app.provider_catalog import normalize_provider_catalog
+
 
 STATE_PATH = Path("data") / "app_state.json"
 LAST_PROFILE_PATH = Path("data") / "last_profile.json"
@@ -114,44 +116,24 @@ def load_provider_catalog_entries(defaults: List[str]) -> List[Dict[str, Any]]:
                     }
                 )
 
-    if not entries:
-        entries = [
-            {
-                "provider_id": name,
-                "provider_name": name,
-                "discipline": "",
-                "availability_templates": [],
-                "exceptions": [],
-            }
-            for name in defaults
-        ]
-        save_provider_catalog_entries(entries)
-
-    # stable order, unique by provider_name
-    unique: Dict[str, Dict[str, Any]] = {}
-    for entry in entries:
-        unique[entry["provider_name"]] = entry
-    return [unique[k] for k in sorted(unique.keys())]
+    normalized = normalize_provider_catalog(
+        entries,
+        defaults=defaults,
+        all_rooms=[],
+        disciplines=[],
+    )
+    if entries != normalized:
+        save_provider_catalog_entries(normalized)
+    return normalized
 
 
 def save_provider_catalog_entries(entries: List[Dict[str, Any]]) -> Path:
-    cleaned: List[Dict[str, Any]] = []
-    seen: set[str] = set()
-    for item in entries:
-        name = str(item.get("provider_name") or item.get("provider_id") or "").strip()
-        if not name or name in seen:
-            continue
-        seen.add(name)
-        cleaned.append(
-            {
-                "provider_id": str(item.get("provider_id") or name),
-                "provider_name": name,
-                "discipline": str(item.get("discipline", "")).strip(),
-                "availability_templates": item.get("availability_templates") or [],
-                "exceptions": item.get("exceptions") or [],
-            }
-        )
-    cleaned.sort(key=lambda x: x["provider_name"])
+    cleaned = normalize_provider_catalog(
+        entries,
+        defaults=[],
+        all_rooms=[],
+        disciplines=[],
+    )
     _write_json(PROVIDER_CATALOG_PATH, {"providers": cleaned})
     state = load_state()
     state["provider_catalog_file"] = str(PROVIDER_CATALOG_PATH)

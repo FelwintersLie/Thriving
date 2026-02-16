@@ -7,6 +7,7 @@ from app.windows_gui import (
     build_provider_availability_preview_data,
     build_patient_grid_data,
     build_provider_records,
+    build_provider_records_from_profiles,
     build_room_records,
     military_time_choices,
     parse_time_input,
@@ -84,6 +85,23 @@ class WindowsGuiHelperTests(unittest.TestCase):
         values = military_time_choices()
         self.assertIn("0730", values)
         self.assertIn("1600", values)
+
+    def test_build_provider_records_from_profiles_keeps_allowed_rooms(self):
+        records = build_provider_records_from_profiles(
+            [
+                {
+                    "provider_id": "p1",
+                    "provider_name": "Provider 1",
+                    "discipline": "Physical Therapy",
+                    "allowed_rooms": ["Room 1"],
+                    "availability_templates": [{"weekday": 0, "windows": [{"start_minute": 450, "end_minute": 510}]}],
+                    "exceptions": [],
+                }
+            ],
+            day_start=450,
+            day_end=1080,
+        )
+        self.assertEqual(records[0]["allowed_rooms"], ["Room 1"])
 
     def test_build_provider_availability_preview_data_maps_windows(self):
         profile = {

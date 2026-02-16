@@ -51,6 +51,7 @@ def _providers(raw_list: List[Dict[str, Any]]) -> List[Provider]:
                 disciplines=set(raw["disciplines"]),
                 templates=templates,
                 exceptions=exceptions,
+                allowed_rooms=set(raw.get("allowed_rooms", [])) if raw.get("allowed_rooms") else set(),
             )
         )
     return providers

@@ -137,6 +137,23 @@ class SchedulerTests(unittest.TestCase):
         self.assertEqual(initial["r3"], reworked["r3"], "Unrelated OT visit should stay stable")
 
 
+    def test_provider_allowed_rooms_constrain_candidates(self):
+        providers, patients, rooms = self._core_inputs()
+        providers[0].allowed_rooms = {"gym"}
+        requests = [SessionRequest("r1", ("a",), "pt", 30, Mode.INDIVIDUAL, self.date_key)]
+
+        schedule = self.engine.generate_schedule(
+            date_key=self.date_key,
+            weekday=self.weekday,
+            requests=requests,
+            providers=providers,
+            patients=patients,
+            rooms=rooms,
+            day_window=TimeWindow(8 * 60, 12 * 60),
+        )
+
+        self.assertEqual(schedule["r1"].room_id, "gym")
+
     def test_rejects_invalid_day_window(self):
         providers, patients, rooms = self._core_inputs()
         requests = [SessionRequest("r1", ("a",), "pt", 30, Mode.INDIVIDUAL, self.date_key)]

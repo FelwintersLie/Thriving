@@ -52,6 +52,7 @@ class Provider:
     disciplines: set[str]
     templates: List[ProviderTemplate] = field(default_factory=list)
     exceptions: List[ProviderException] = field(default_factory=list)
+    allowed_rooms: set[str] = field(default_factory=set)
 
     def is_available(self, date_key: str, weekday: int, start: int, end: int) -> bool:
         in_template = any(w.contains(start, end) for t in self.templates if t.weekday == weekday for w in t.windows)
@@ -183,6 +184,8 @@ class ScheduleEngine:
 
                 for room in rooms:
                     if req.room_id and room.id != req.room_id:
+                        continue
+                    if provider.allowed_rooms and room.id not in provider.allowed_rooms:
                         continue
                     if req.discipline not in room.allowed_disciplines:
                         continue
