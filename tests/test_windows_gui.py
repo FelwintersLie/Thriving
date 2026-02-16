@@ -4,6 +4,7 @@ from app.windows_gui import (
     DEFAULT_PROVIDER_NAMES,
     PREDEFINED_ROOMS,
     build_live_result_from_profile,
+    build_provider_availability_preview_data,
     build_patient_grid_data,
     build_provider_records,
     build_room_records,
@@ -83,6 +84,18 @@ class WindowsGuiHelperTests(unittest.TestCase):
         values = military_time_choices()
         self.assertIn("0730", values)
         self.assertIn("1600", values)
+
+    def test_build_provider_availability_preview_data_maps_windows(self):
+        profile = {
+            "availability_templates": [
+                {"weekday": 0, "windows": [{"start_minute": 450, "end_minute": 510}]},
+                {"weekday": 2, "windows": [{"start_minute": 600, "end_minute": 660}]},
+            ]
+        }
+        preview = build_provider_availability_preview_data(profile, 450, 1080)
+        self.assertEqual(preview[0][0], (450, 510))
+        self.assertEqual(preview[2][0], (600, 660))
+
 
 
 if __name__ == "__main__":

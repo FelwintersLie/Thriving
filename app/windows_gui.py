@@ -19,12 +19,14 @@ from app.persistence import (
     load_last_generated_schedule,
     load_last_profile,
     load_provider_catalog,
+    load_provider_catalog_entries,
     load_provider_profiles,
     load_requirements_catalog,
     save_last_generated_schedule,
     save_last_profile,
     save_last_schedule,
     save_provider_catalog,
+    save_provider_catalog_entries,
     save_provider_profiles,
     save_requirements_catalog,
 )
@@ -286,6 +288,23 @@ def build_patient_records(date_keys: List[str], day_start: int, day_end: int) ->
     return [{"id": pid, "name": f"Patient {pid}", "availability": availability} for pid in PATIENT_ID_CHOICES]
 
 
+
+
+def build_provider_availability_preview_data(provider_profile: Dict[str, Any], day_start: int, day_end: int) -> Dict[int, List[Tuple[int, int]]]:
+    preview: Dict[int, List[Tuple[int, int]]] = {i: [] for i in range(5)}
+    templates = provider_profile.get("availability_templates") or provider_profile.get("templates") or []
+    for t in templates:
+        wd = int(t.get("weekday", -1))
+        if wd < 0 or wd > 4:
+            continue
+        for w in t.get("windows", []):
+            start = max(day_start, int(w.get("start_minute", day_start)))
+            end = min(day_end, int(w.get("end_minute", day_end)))
+            if end > start:
+                preview[wd].append((start, end))
+        preview[wd].sort()
+    return preview
+
 def build_live_result_from_profile(profile: Dict[str, Any]) -> Dict[str, Any]:
     assignments: Dict[str, Dict[str, Any]] = {}
     for req in profile.get("requests", []):
@@ -347,14 +366,19 @@ class SchedulerDesktopApp:
         self.root.title("Therapy Scheduler - Visual Planner")
         self.root.geometry("1380x900")
 
-        self.provider_catalog = load_provider_catalog(DEFAULT_PROVIDER_NAMES)
-        self.provider_profiles = load_provider_profiles().get("providers", [])
+        self.provider_profiles = load_provider_catalog_entries(DEFAULT_PROVIDER_NAMES)
+        self.provider_catalog = sorted(dict.fromkeys([p.get("provider_name", "") for p in self.provider_profiles if p.get("provider_name")]))
+        if not self.provider_profiles:
+            self.provider_profiles = load_provider_profiles().get("providers", [])
+            self.provider_catalog = load_provider_catalog(DEFAULT_PROVIDER_NAMES)
         if not self.provider_profiles:
             self.provider_profiles = [
                 {"provider_id": name, "provider_name": name, "discipline": "", "availability_templates": [], "exceptions": []}
                 for name in self.provider_catalog
             ]
-            save_provider_profiles(self.provider_profiles)
+        save_provider_catalog_entries(self.provider_profiles)
+        save_provider_catalog_entries(self.provider_profiles)
+        save_provider_profiles(self.provider_profiles)
         self.last_generated_schedule = load_last_generated_schedule()
         self.last_result: Dict[str, Any] | None = None
         raw_conditions = load_requirements_catalog()
@@ -500,6 +524,7 @@ class SchedulerDesktopApp:
         self.auto_scope_var = self.tk.StringVar(value="all")
         self.auto_subset_patients_var = self.tk.StringVar(value="")
         self.auto_duration_var = self.tk.StringVar(value="60")
+        self.auto_sessions_per_week_var = self.tk.StringVar(value="1")
         self.auto_weekday_1_var = self.tk.StringVar(value="Monday")
         self.auto_weekday_2_var = self.tk.StringVar(value="Wednesday")
         self.auto_weekday_3_var = self.tk.StringVar(value="(none)")
@@ -545,7 +570,9 @@ class SchedulerDesktopApp:
         ttk.Combobox(cond, textvariable=self.auto_mode_var, values=["individual", "group"], state="readonly", width=11).grid(row=1, column=6, padx=2)
 
         ttk.Label(cond, text="Duration").grid(row=0, column=7, sticky="w")
-        ttk.Combobox(cond, textvariable=self.auto_duration_var, values=["30", "45", "60", "75", "90"], state="readonly", width=8).grid(row=1, column=7, padx=2)
+        ttk.Combobox(cond, textvariable=self.auto_duration_var, values=[str(i) for i in range(15, 181, 15)], state="readonly", width=8).grid(row=1, column=7, padx=2)
+        ttk.Label(cond, text="Sessions / week").grid(row=0, column=8, sticky="w")
+        ttk.Combobox(cond, textvariable=self.auto_sessions_per_week_var, values=[str(i) for i in range(1, 6)], state="readonly", width=10).grid(row=1, column=8, padx=2)
 
         ttk.Label(cond, text="Patient Scope").grid(row=2, column=0, sticky="w", pady=(6, 0))
         ttk.Combobox(cond, textvariable=self.auto_scope_var, values=["all", "single", "subset"], state="readonly", width=12).grid(row=3, column=0, padx=2)
@@ -588,6 +615,8 @@ class SchedulerDesktopApp:
         action_row = ttk.Frame(cond)
         action_row.grid(row=8, column=0, columnspan=8, sticky="w", pady=(8, 0))
         ttk.Button(action_row, text="Add Requirement", command=lambda: self._safe_action(self.add_auto_condition)).pack(side="left", padx=4)
+        ttk.Button(action_row, text="Edit Selected", command=lambda: self._safe_action(self.edit_selected_condition)).pack(side="left", padx=4)
+        ttk.Button(action_row, text="Duplicate Selected", command=lambda: self._safe_action(self.duplicate_selected_condition)).pack(side="left", padx=4)
         ttk.Button(action_row, text="Remove Selected Requirement", command=lambda: self._safe_action(self.remove_selected_condition)).pack(side="left", padx=4)
         ttk.Button(action_row, text="Clear Requirements", command=lambda: self._safe_action(self.clear_auto_conditions)).pack(side="left", padx=4)
 
@@ -667,6 +696,10 @@ class SchedulerDesktopApp:
         self.ttk.Combobox(provider_frame, textvariable=self.provider_avail_start_var, values=time_choices, state="readonly", width=10).grid(row=3, column=1, padx=2, sticky="w")
         self.ttk.Combobox(provider_frame, textvariable=self.provider_avail_end_var, values=time_choices, state="readonly", width=10).grid(row=3, column=2, padx=2, sticky="w")
         ttk.Button(provider_frame, text="Set Availability Window", command=lambda: self._safe_action(self.set_provider_availability_window)).grid(row=3, column=3, padx=4)
+        self.provider_manage_combo.bind("<<ComboboxSelected>>", lambda _e: self._safe_action(self.render_provider_availability_preview))
+
+        self.provider_preview_canvas = self.tk.Canvas(provider_frame, width=620, height=160, bg="white", highlightthickness=1, highlightbackground="#ced4da")
+        self.provider_preview_canvas.grid(row=4, column=0, columnspan=4, pady=(8, 0), sticky="ew")
 
         appt = ttk.Labelframe(parent, text="Add Appointment", padding=6)
         appt.pack(fill="x", pady=(0, 6))
@@ -819,6 +852,8 @@ class SchedulerDesktopApp:
         self._refresh_date_dropdowns()
         self._refresh_provider_dropdowns()
         self._autosave_profile()
+        if hasattr(self, "provider_preview_canvas"):
+            self.render_provider_availability_preview()
 
     def _render_patient_grid(self, profile: Dict[str, Any], result: Dict[str, Any]) -> None:
         canvas = self.grid_canvas
@@ -1042,6 +1077,8 @@ class SchedulerDesktopApp:
         self.provider_catalog = sorted(self.provider_catalog + [name])
         self.provider_profiles.append({"provider_id": name, "provider_name": name, "discipline": "", "availability_templates": [], "exceptions": []})
         save_provider_catalog(self.provider_catalog)
+        save_provider_catalog_entries(self.provider_profiles)
+        save_provider_catalog_entries(self.provider_profiles)
         save_provider_profiles(self.provider_profiles)
         if self.loaded_profile:
             self._sync_profile_resources(self.loaded_profile)
@@ -1061,6 +1098,8 @@ class SchedulerDesktopApp:
         self.provider_catalog = [p for p in self.provider_catalog if p != name]
         self.provider_profiles = [p for p in self.provider_profiles if p.get("provider_id") != name and p.get("provider_name") != name and p.get("id") != name]
         save_provider_catalog(self.provider_catalog)
+        save_provider_catalog_entries(self.provider_profiles)
+        save_provider_catalog_entries(self.provider_profiles)
         save_provider_profiles(self.provider_profiles)
         if self.loaded_profile:
             self._sync_profile_resources(self.loaded_profile)
@@ -1115,6 +1154,7 @@ class SchedulerDesktopApp:
                 }
             )
 
+        save_provider_catalog_entries(self.provider_profiles)
         save_provider_profiles(self.provider_profiles)
         if self.loaded_profile:
             self._sync_profile_resources(self.loaded_profile)
@@ -1280,6 +1320,7 @@ class SchedulerDesktopApp:
             "provider_ids": provider_ids,
             "room_id": "any" if room_choice == "Any compatible room" else room_choice,
             "duration_minutes": int(self.auto_duration_var.get()),
+            "sessions_per_week": int(self.auto_sessions_per_week_var.get()),
             "session_mode": self.auto_mode_var.get().strip(),
             "patient_scope": scope,
             "patient_ids": subset_ids,
@@ -1309,6 +1350,119 @@ class SchedulerDesktopApp:
             return
         selected = self.auto_conditions[idx]
         self.auto_req_id_var.set(selected["id"])
+        self.auto_discipline_var.set(selected.get("discipline", self.auto_discipline_var.get()))
+        self.auto_mode_var.set(selected.get("session_mode", self.auto_mode_var.get()))
+        self.auto_duration_var.set(str(selected.get("duration_minutes", self.auto_duration_var.get())))
+        self.auto_sessions_per_week_var.set(str(selected.get("sessions_per_week", 1)))
+
+    def edit_selected_condition(self) -> None:
+        selection = self.auto_condition_list.curselection()
+        if not selection:
+            raise ValueError("Select a requirement in the list first")
+        idx = int(selection[0])
+        if idx >= len(self.auto_conditions):
+            raise ValueError("Selected requirement is out of range")
+
+        existing = self.auto_conditions[idx]
+        updated = {
+            **existing,
+            "discipline": self.auto_discipline_var.get().strip(),
+            "duration_minutes": int(self.auto_duration_var.get()),
+            "sessions_per_week": int(self.auto_sessions_per_week_var.get()),
+            "session_mode": self.auto_mode_var.get().strip(),
+            "time_windows": self._parse_windows_from_ui(),
+            "hard_constraint": bool(self.auto_hard_var.get()),
+            "priority": int(self.auto_priority_var.get()),
+        }
+        self.auto_conditions[idx] = validate_requirement(updated)
+        save_requirements_catalog(self.auto_conditions)
+        self._refresh_auto_condition_list()
+        self.status_var.set(f"Status: Updated requirement {updated['id']}")
+
+    def duplicate_selected_condition(self) -> None:
+        selection = self.auto_condition_list.curselection()
+        if not selection:
+            raise ValueError("Select a requirement in the list first")
+        idx = int(selection[0])
+        if idx >= len(self.auto_conditions):
+            raise ValueError("Selected requirement is out of range")
+
+        source = dict(self.auto_conditions[idx])
+        base = source.get("id", "req") + "_copy"
+        existing_ids = {c.get("id") for c in self.auto_conditions}
+        new_id = base
+        n = 2
+        while new_id in existing_ids:
+            new_id = f"{base}{n}"
+            n += 1
+        source["id"] = new_id
+        self.auto_conditions.append(source)
+        save_requirements_catalog(self.auto_conditions)
+        self._refresh_auto_condition_list()
+        self.status_var.set(f"Status: Duplicated requirement as {new_id}")
+
+    def render_provider_availability_preview(self) -> None:
+        if not hasattr(self, "provider_preview_canvas"):
+            return
+        canvas = self.provider_preview_canvas
+        canvas.delete("all")
+        selected_name = self.provider_selected_var.get().strip()
+        if not selected_name:
+            canvas.create_text(10, 10, anchor="nw", text="Select a provider to preview availability.", fill="#495057")
+            return
+
+        provider = next(
+            (
+                p
+                for p in self.provider_profiles
+                if str(p.get("provider_id") or p.get("provider_name") or p.get("id", "")).strip() == selected_name
+            ),
+            None,
+        )
+        if not provider:
+            canvas.create_text(10, 10, anchor="nw", text="No availability data for selected provider.", fill="#495057")
+            return
+
+        day_start = parse_time_input(self.day_start_var.get())
+        day_end = parse_time_input(self.day_end_var.get())
+        preview = build_provider_availability_preview_data(provider, day_start, day_end)
+
+        weekdays = ["Mon", "Tue", "Wed", "Thu", "Fri"]
+        left_w, header_h, row_h, col_w = 52, 24, 10, 110
+        slots = max(1, (day_end - day_start) // GRID_SLOT_MINUTES)
+        total_w = left_w + len(weekdays) * col_w
+        total_h = header_h + slots * row_h
+        canvas.config(scrollregion=(0, 0, total_w, total_h))
+
+        canvas.create_rectangle(0, 0, left_w, header_h, fill="#0b4f6c", outline="#0b4f6c")
+        for idx, wd in enumerate(weekdays):
+            x0 = left_w + idx * col_w
+            x1 = x0 + col_w
+            canvas.create_rectangle(x0, 0, x1, header_h, fill="#1d3557", outline="#f1faee")
+            canvas.create_text((x0 + x1) // 2, header_h // 2, text=wd, fill="white", font=("Segoe UI", 8, "bold"))
+
+        for slot in range(slots):
+            minute = day_start + slot * GRID_SLOT_MINUTES
+            y0 = header_h + slot * row_h
+            y1 = y0 + row_h
+            if slot % 4 == 0:
+                canvas.create_text(left_w // 2, (y0 + y1) // 2, text=f"{minute//60:02d}:{minute%60:02d}", font=("Segoe UI", 6), fill="#495057")
+            for idx in range(len(weekdays)):
+                x0 = left_w + idx * col_w
+                x1 = x0 + col_w
+                canvas.create_rectangle(x0, y0, x1, y1, fill="#ffffff", outline="#e9ecef")
+
+        for wd, windows in preview.items():
+            for start, end in windows:
+                start_slot = max(0, (start - day_start) // GRID_SLOT_MINUTES)
+                end_slot = min(slots, (end - day_start) // GRID_SLOT_MINUTES)
+                if end_slot <= start_slot:
+                    continue
+                x0 = left_w + wd * col_w + 2
+                x1 = x0 + col_w - 4
+                y0 = header_h + start_slot * row_h + 1
+                y1 = header_h + end_slot * row_h - 1
+                canvas.create_rectangle(x0, y0, x1, y1, fill="#90e0ef", outline="#0077b6", width=2)
 
     def remove_selected_condition(self) -> None:
         selection = self.auto_condition_list.curselection()
@@ -1343,7 +1497,7 @@ class SchedulerDesktopApp:
             providers = c.get("provider_ids") or ([c.get("provider_id", "any")] if c.get("provider_id", "any") != "any" else ["any"])
             line = (
                 f"{idx}) {c['id']} | {c['discipline']} | providers={','.join(providers)} | room={c['room_id']} | "
-                f"{c['session_mode']} {c['duration_minutes']}m | scope={c['patient_scope']} | days={days} | weeks={c['weeks']} | "
+                f"{c['session_mode']} {c['duration_minutes']}m x{c.get('sessions_per_week',1)}/wk | scope={c['patient_scope']} | days={days} | weeks={c['weeks']} | "
                 f"windows={windows} | {hard_soft} p={c.get('priority', 100)}"
             )
             self.auto_condition_list.insert(self.tk.END, line)
@@ -1486,6 +1640,8 @@ class SchedulerDesktopApp:
         self.profile_var.set(f"Profile: {path}")
         self.status_var.set("Status: Profile saved")
         self._autosave_profile()
+        if hasattr(self, "provider_preview_canvas"):
+            self.render_provider_availability_preview()
 
     def generate_from_loaded_profile(self) -> None:
         profile = self._require_profile()

@@ -60,27 +60,103 @@ def save_last_schedule(schedule: Dict[str, Any]) -> Path:
 
 
 def load_provider_catalog(defaults: List[str]) -> List[str]:
-    payload = _read_json(PROVIDER_CATALOG_PATH)
-    values = payload.get("providers") if payload else None
-    if not isinstance(values, list) or not values:
-        save_provider_catalog(defaults)
-        return list(defaults)
-    cleaned = [str(v).strip() for v in values if str(v).strip()]
-    if not cleaned:
-        save_provider_catalog(defaults)
-        return list(defaults)
-    return sorted(dict.fromkeys(cleaned))
+    entries = load_provider_catalog_entries(defaults)
+    return [e["provider_name"] for e in entries]
 
 
 def save_provider_catalog(providers: List[str]) -> Path:
-    unique = sorted(dict.fromkeys([p.strip() for p in providers if p.strip()]))
-    _write_json(PROVIDER_CATALOG_PATH, {"providers": unique})
+    entries = [
+        {
+            "provider_id": p.strip(),
+            "provider_name": p.strip(),
+            "discipline": "",
+            "availability_templates": [],
+            "exceptions": [],
+        }
+        for p in providers
+        if p.strip()
+    ]
+    return save_provider_catalog_entries(entries)
+
+
+
+
+def load_provider_catalog_entries(defaults: List[str]) -> List[Dict[str, Any]]:
+    payload = _read_json(PROVIDER_CATALOG_PATH)
+    values = payload.get("providers") if payload else None
+    entries: List[Dict[str, Any]] = []
+    if isinstance(values, list):
+        for item in values:
+            if isinstance(item, dict):
+                name = str(item.get("provider_name") or item.get("name") or item.get("provider_id") or "").strip()
+                if not name:
+                    continue
+                entries.append(
+                    {
+                        "provider_id": str(item.get("provider_id") or name),
+                        "provider_name": name,
+                        "discipline": str(item.get("discipline", "")).strip(),
+                        "availability_templates": item.get("availability_templates") or item.get("templates") or [],
+                        "exceptions": item.get("exceptions") or [],
+                    }
+                )
+            else:
+                name = str(item).strip()
+                if not name:
+                    continue
+                entries.append(
+                    {
+                        "provider_id": name,
+                        "provider_name": name,
+                        "discipline": "",
+                        "availability_templates": [],
+                        "exceptions": [],
+                    }
+                )
+
+    if not entries:
+        entries = [
+            {
+                "provider_id": name,
+                "provider_name": name,
+                "discipline": "",
+                "availability_templates": [],
+                "exceptions": [],
+            }
+            for name in defaults
+        ]
+        save_provider_catalog_entries(entries)
+
+    # stable order, unique by provider_name
+    unique: Dict[str, Dict[str, Any]] = {}
+    for entry in entries:
+        unique[entry["provider_name"]] = entry
+    return [unique[k] for k in sorted(unique.keys())]
+
+
+def save_provider_catalog_entries(entries: List[Dict[str, Any]]) -> Path:
+    cleaned: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in entries:
+        name = str(item.get("provider_name") or item.get("provider_id") or "").strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        cleaned.append(
+            {
+                "provider_id": str(item.get("provider_id") or name),
+                "provider_name": name,
+                "discipline": str(item.get("discipline", "")).strip(),
+                "availability_templates": item.get("availability_templates") or [],
+                "exceptions": item.get("exceptions") or [],
+            }
+        )
+    cleaned.sort(key=lambda x: x["provider_name"])
+    _write_json(PROVIDER_CATALOG_PATH, {"providers": cleaned})
     state = load_state()
     state["provider_catalog_file"] = str(PROVIDER_CATALOG_PATH)
     save_state(state)
     return PROVIDER_CATALOG_PATH
-
-
 def load_requirements_catalog() -> List[Dict[str, Any]]:
     payload = _read_json(REQUIREMENTS_CATALOG_PATH)
     values = payload.get("requirements") if payload else None

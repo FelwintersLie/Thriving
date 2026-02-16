@@ -1,6 +1,6 @@
 import unittest
 
-from app.auto_scheduler import auto_reconfigure_schedule, explain_infeasibility, generate_three_week_schedule
+from app.auto_scheduler import auto_reconfigure_schedule, explain_infeasibility, generate_three_week_schedule, validate_requirement
 
 
 class AutoSchedulerTests(unittest.TestCase):
@@ -163,6 +163,27 @@ class AutoSchedulerTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         providers_used = {a["provider_id"] for a in result["assignments"].values()}
         self.assertTrue(providers_used.intersection({"Daniel Fenton", "Heidi Greata"}))
+
+
+    def test_validate_requirement_allows_partial_optional_fields(self):
+        req = validate_requirement(
+            {
+                "id": "partial",
+                "discipline": "Speech-Language Pathology",
+                "duration_minutes": 60,
+                "session_mode": "individual",
+                "patient_scope": "all",
+                "patient_ids": [],
+                "weekdays": [0, 2],
+                "weeks": [1, 2, 3],
+                "time_windows": [{"start_minute": 480, "end_minute": 840}],
+                "hard_constraint": True,
+                "priority": 50,
+            }
+        )
+        self.assertEqual(req["provider_id"], "any")
+        self.assertEqual(req["room_id"], "any")
+        self.assertEqual(req["sessions_per_week"], 1)
 
 
 

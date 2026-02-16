@@ -106,7 +106,11 @@ def validate_requirement(requirement: Dict[str, Any]) -> Dict[str, Any]:
         "hard_constraint": bool(requirement.get("hard_constraint", True)),
         "priority": int(requirement.get("priority", 100)),
         "group_size": int(requirement.get("group_size", 6)),
+        "sessions_per_week": int(requirement.get("sessions_per_week", 1)),
     }
+    if out["sessions_per_week"] < 1:
+        raise ValueError(f"Requirement {rid}: sessions_per_week must be at least 1")
+
     if out["provider_ids"]:
         out["provider_ids"] = sorted(dict.fromkeys(out["provider_ids"]))
         out["provider_id"] = out["provider_ids"][0]
@@ -115,15 +119,22 @@ def validate_requirement(requirement: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _dates_for_requirement(requirement: Dict[str, Any], planning_date_keys: List[str]) -> List[str]:
-    dates: List[str] = []
+    by_week: Dict[int, List[str]] = {}
+    start = date.fromisoformat(planning_date_keys[0])
     for d in planning_date_keys:
         as_date = date.fromisoformat(d)
-        week_number = ((as_date - date.fromisoformat(planning_date_keys[0])).days // 7) + 1
+        week_number = ((as_date - start).days // 7) + 1
         if week_number not in requirement["weeks"]:
             continue
         if as_date.weekday() not in requirement["weekdays"]:
             continue
-        dates.append(d)
+        by_week.setdefault(week_number, []).append(d)
+
+    sessions_per_week = int(requirement.get("sessions_per_week", 1))
+    dates: List[str] = []
+    for week_number in sorted(by_week.keys()):
+        week_dates = sorted(by_week[week_number])
+        dates.extend(week_dates[:sessions_per_week])
     return dates
 
 

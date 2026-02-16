@@ -11,12 +11,14 @@ from app.persistence import (
     STATE_PATH,
     load_last_generated_schedule,
     load_last_profile,
+    load_provider_catalog_entries,
     load_provider_profiles,
     load_requirements_catalog,
     load_provider_catalog,
     load_state,
     save_last_generated_schedule,
     save_last_profile,
+    save_provider_catalog_entries,
     save_provider_profiles,
     save_requirements_catalog,
     save_last_schedule,
@@ -76,6 +78,22 @@ class PersistenceTests(unittest.TestCase):
         self.assertEqual(load_requirements_catalog(), reqs)
         self.assertEqual(load_provider_profiles().get("providers"), profiles)
         self.assertEqual(load_last_generated_schedule(), generated)
+
+    def test_provider_catalog_entries_roundtrip(self):
+        entries = [
+            {
+                "provider_id": "p1",
+                "provider_name": "Provider One",
+                "discipline": "Speech-Language Pathology",
+                "availability_templates": [{"weekday": 0, "windows": [{"start_minute": 480, "end_minute": 720}]}],
+                "exceptions": [],
+            }
+        ]
+        save_provider_catalog_entries(entries)
+        loaded = load_provider_catalog_entries(["Fallback"])
+        self.assertEqual(loaded[0]["provider_name"], "Provider One")
+        self.assertEqual(loaded[0]["availability_templates"][0]["weekday"], 0)
+
 
 
 if __name__ == "__main__":

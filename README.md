@@ -203,3 +203,10 @@ Recommended first test tonight:
 
 - **Solver Effort** (Auto Generator): increases search/candidate limits so complex schedules can use more compute before hitting search-limit errors.
 - **Provider Availability Window** (Provider List Management): sets weekday availability windows for selected providers, separate from appointment requirement windows.
+
+
+- Auto Generator now has two linked builders:
+  - **Section A: Appointment Requirements** (required sessions/frequency/windows/priority),
+  - **Section B: Provider Availability Rules** (weekly availability templates by provider + live Mon-Fri preview grid).
+- Requirement rows now support add/edit/duplicate/remove and include **sessions per week**.
+- Provider availability rules now persist in the provider catalog schema so updates are reused by the generator immediately.
