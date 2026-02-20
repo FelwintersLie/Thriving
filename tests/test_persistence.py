@@ -115,5 +115,19 @@ class PersistenceTests(unittest.TestCase):
         self.assertEqual(loaded["rooms"]["Room 1"]["unavailable_weekly"][0][0]["start_minute"], 660)
 
 
+    def test_corrupt_provider_catalog_recovers_to_defaults(self):
+        PROVIDER_CATALOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        PROVIDER_CATALOG_PATH.write_text('{"providers": [{"provider_name": "Bad", "exceptions": [{"date": "not-a-date", "start_minute": 480, "end_minute": 540}]}]}', encoding='utf-8')
+        loaded = load_provider_catalog_entries(["Fallback Provider"])
+        self.assertEqual([e["provider_name"] for e in loaded], ["Fallback Provider"])
+
+    def test_corrupt_room_rules_recovers_to_default_schema(self):
+        ROOM_RULES_PATH.parent.mkdir(parents=True, exist_ok=True)
+        ROOM_RULES_PATH.write_text('{"rooms": {"Room 1": {"unavailable_dates": [{"date": "bad-date", "start": 480, "end": 540}]}}}', encoding='utf-8')
+        loaded = load_room_rules(["Room 1", "Room 2"], disciplines=["Physical Therapy"])
+        self.assertIn("Room 1", loaded["rooms"])
+        self.assertIn("Room 2", loaded["rooms"])
+
+
 if __name__ == "__main__":
     unittest.main()

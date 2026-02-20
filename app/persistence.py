@@ -121,12 +121,23 @@ def load_provider_catalog_entries(defaults: List[str]) -> List[Dict[str, Any]]:
                     }
                 )
 
-    normalized = normalize_provider_catalog(
-        entries,
-        defaults=defaults,
-        all_rooms=[],
-        disciplines=[],
-    )
+    try:
+        normalized = normalize_provider_catalog(
+            entries,
+            defaults=defaults,
+            all_rooms=[],
+            disciplines=[],
+        )
+    except Exception:
+        # Fallback for corrupted catalog data so GUI startup stays resilient.
+        normalized = normalize_provider_catalog(
+            [{"provider_id": name, "provider_name": name} for name in defaults],
+            defaults=defaults,
+            all_rooms=[],
+            disciplines=[],
+        )
+        save_provider_catalog_entries(normalized)
+        return normalized
     if entries != normalized:
         save_provider_catalog_entries(normalized)
     return normalized
@@ -191,7 +202,13 @@ def save_last_generated_schedule(schedule: Dict[str, Any]) -> Path:
 
 def load_room_rules(valid_rooms: List[str], disciplines: List[str] | None = None) -> Dict[str, Any]:
     payload = _read_json(ROOM_RULES_PATH)
-    normalized = normalize_room_rules(payload, valid_rooms=valid_rooms, disciplines=disciplines)
+    try:
+        normalized = normalize_room_rules(payload, valid_rooms=valid_rooms, disciplines=disciplines)
+    except Exception:
+        # Recover from invalid/corrupt room rules instead of failing app startup.
+        normalized = normalize_room_rules({}, valid_rooms=valid_rooms, disciplines=disciplines)
+        save_room_rules(normalized, valid_rooms=valid_rooms, disciplines=disciplines)
+        return normalized
     if payload != normalized:
         save_room_rules(normalized, valid_rooms=valid_rooms, disciplines=disciplines)
     return normalized
