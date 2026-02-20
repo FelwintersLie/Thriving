@@ -18,6 +18,7 @@ from app.windows_gui import (
     build_room_records,
     military_time_choices,
     parse_date_parts,
+    normalize_restored_profile,
     parse_time_input,
     summarize_schedule,
 )
@@ -163,6 +164,17 @@ class WindowsGuiHelperTests(unittest.TestCase):
         self.assertIn("EV10", PATIENT_ID_CHOICES)
         ordered = sorted(["EV2", "IOP10", "IOP2", "EV1"], key=patient_sort_key)
         self.assertEqual(ordered, ["IOP2", "IOP10", "EV1", "EV2"])
+
+
+    def test_normalize_restored_profile_handles_missing_planning_dates(self):
+        profile = {"date_key": "2026-01-05", "day_window": {"start_minute": 450, "end_minute": 1080}}
+        normalized = normalize_restored_profile(profile)
+        self.assertEqual(normalized["date_key"], "2026-01-05")
+        self.assertTrue(len(normalized["planning_dates"]) >= 5)
+
+    def test_normalize_restored_profile_rejects_bad_day_window(self):
+        with self.assertRaises(ValueError):
+            normalize_restored_profile({"date_key": "2026-01-05", "day_window": {"start_minute": "bad", "end_minute": 1080}})
 
 
 if __name__ == "__main__":

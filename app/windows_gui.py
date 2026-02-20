@@ -232,6 +232,43 @@ def planning_dates(start: date, weeks: int = 3) -> List[str]:
     return out
 
 
+def normalize_restored_profile(profile: Dict[str, Any] | None) -> Dict[str, Any] | None:
+    if not isinstance(profile, dict) or not profile:
+        return None
+    restored = dict(profile)
+
+    raw_window = restored.get("day_window") or {}
+    try:
+        start_minute = int(raw_window.get("start_minute", GRID_START_MINUTE))
+        end_minute = int(raw_window.get("end_minute", GRID_END_MINUTE))
+    except Exception as exc:
+        raise ValueError("Invalid day_window in restored profile") from exc
+    if end_minute <= start_minute:
+        raise ValueError("Invalid day_window range in restored profile")
+    restored["day_window"] = {"start_minute": start_minute, "end_minute": end_minute}
+
+    raw_date_key = restored.get("date_key")
+    planning = restored.get("planning_dates")
+    if isinstance(planning, list) and planning:
+        planning_dates_normalized: List[str] = []
+        for value in planning:
+            planning_dates_normalized.append(date.fromisoformat(str(value)).isoformat())
+        restored["planning_dates"] = planning_dates_normalized
+        if raw_date_key:
+            restored["date_key"] = date.fromisoformat(str(raw_date_key)).isoformat()
+        else:
+            restored["date_key"] = planning_dates_normalized[0]
+        return restored
+
+    if raw_date_key:
+        start_date = date.fromisoformat(str(raw_date_key))
+    else:
+        start_date = datetime.utcnow().date()
+    restored["date_key"] = start_date.isoformat()
+    restored["planning_dates"] = planning_dates(start_date)
+    return restored
+
+
 def parse_time_input(raw: str) -> int:
     value = raw.strip()
     if not value:
@@ -514,10 +551,18 @@ class SchedulerDesktopApp:
         self.root.protocol("WM_DELETE_WINDOW", self._on_close_requested)
 
         if self.loaded_profile:
-            self._sync_profile_resources(self.loaded_profile)
-            self.status_var.set("Status: Restored last profile")
-            self.profile_var.set(f"Profile: restored from {self.loaded_profile_path}" if self.loaded_profile_path else "Profile: restored from data/last_profile.json")
-            self._refresh_profile_preview()
+            try:
+                self.loaded_profile = normalize_restored_profile(self.loaded_profile)
+                if self.loaded_profile:
+                    self._sync_profile_resources(self.loaded_profile)
+                    self.status_var.set("Status: Restored last profile")
+                    self.profile_var.set(f"Profile: restored from {self.loaded_profile_path}" if self.loaded_profile_path else "Profile: restored from data/last_profile.json")
+                    self._refresh_profile_preview()
+            except Exception:
+                self.loaded_profile = None
+                self.loaded_profile_path = None
+                self.status_var.set("Status: Could not restore last profile; start with New Blank Profile")
+                self.profile_var.set("Profile: (none loaded)")
 
     def _build_layout(self) -> None:
         tk = self.tk
