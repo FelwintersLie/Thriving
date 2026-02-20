@@ -541,28 +541,14 @@ class SchedulerDesktopApp:
             except Exception:
                 continue
         self.auto_reconfigure_history: List[List[Dict[str, Any]]] = []
-        self.loaded_profile: Dict[str, Any] | None = load_last_profile()
-        last_source = load_last_profile_source()
-        self.loaded_profile_path: Path | None = Path(last_source) if last_source else None
+        # Startup behavior intentionally begins with a blank profile; users load/create explicitly.
+        self.loaded_profile: Dict[str, Any] | None = None
+        self.loaded_profile_path: Path | None = None
         self.manual_undo_stack: List[Dict[str, Any]] = []
         self.selected_request_id: str | None = None
 
         self._build_layout()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close_requested)
-
-        if self.loaded_profile:
-            try:
-                self.loaded_profile = normalize_restored_profile(self.loaded_profile)
-                if self.loaded_profile:
-                    self._sync_profile_resources(self.loaded_profile)
-                    self.status_var.set("Status: Restored last profile")
-                    self.profile_var.set(f"Profile: restored from {self.loaded_profile_path}" if self.loaded_profile_path else "Profile: restored from data/last_profile.json")
-                    self._refresh_profile_preview()
-            except Exception:
-                self.loaded_profile = None
-                self.loaded_profile_path = None
-                self.status_var.set("Status: Could not restore last profile; start with New Blank Profile")
-                self.profile_var.set("Profile: (none loaded)")
 
     def _build_layout(self) -> None:
         tk = self.tk
