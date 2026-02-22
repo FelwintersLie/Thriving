@@ -1,4 +1,4 @@
 @echo off
 setlocal
-call "%~dp0..\THRIVE Scheduler.bat"
+call "%~dp0THRIVE Scheduler.bat"
 endlocal
