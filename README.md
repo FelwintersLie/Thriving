@@ -245,6 +245,7 @@ Recommended first test tonight:
 - Saved in `data/room_rules.json` and applied immediately.
 - Manual Scheduler blocks Add Appointment when selected room violates room rules.
 - Auto-generator treats room rules as hard constraints and includes room-rule rejection counts in infeasibility details.
+- Core day scheduler now uses a constraint-based optimization/backtracking engine with composable hard constraints (room/provider/patient/resource) and soft scoring (stability/preferences), plus diagnostics logs for constraint failures and scheduling decisions.
 
 
 ### IOP + EVAL Integrated Scheduling

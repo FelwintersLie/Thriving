@@ -254,6 +254,22 @@ class SchedulerTests(unittest.TestCase):
         )
         self.assertIn("r1", schedule)
 
+    def test_diagnostics_capture_constraint_failures(self):
+        providers, patients, rooms = self._core_inputs()
+        rooms[0].unavailable_weekly = {self.weekday: [TimeWindow(8 * 60, 12 * 60)]}
+        request = SessionRequest("r_blocked", ("a",), "pt", 30, Mode.INDIVIDUAL, self.date_key, room_id="gym")
+        with self.assertRaises(Exception):
+            self.engine.generate_schedule(
+                date_key=self.date_key,
+                weekday=self.weekday,
+                requests=[request],
+                providers=providers,
+                patients=patients,
+                rooms=rooms,
+                day_window=TimeWindow(8 * 60, 12 * 60),
+            )
+        self.assertTrue(any("constraint_failure" in d for d in self.engine.last_diagnostics))
+
 
 if __name__ == "__main__":
     unittest.main()
