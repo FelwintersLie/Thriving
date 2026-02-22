@@ -130,20 +130,20 @@ def build_schedule_layout_model(
     layout["canvas"] = {"width": total_w, "height": total_h}
 
     layout["rectangles"].append({"x0": 0, "y0": 0, "x1": time_col_w, "y1": header_h, "fill": style["header_time_fill"], "outline": style["header_time_fill"], "width": 1})
-    layout["texts"].append({"x": time_col_w / 2, "y": header_h / 2, "text": "Time", "fill": "#ffffff", "font_size": 10, "bold": True, "anchor": "center", "justify": "center"})
+    layout["texts"].append({"x": time_col_w / 2, "y": header_h / 2, "x0": 0, "y0": 0, "x1": time_col_w, "y1": header_h, "text": "Time", "fill": "#ffffff", "font_size": 10, "bold": True, "anchor": "center", "justify": "center"})
 
     for idx, (date_key, axis_val) in enumerate(col_pairs):
         x0 = time_col_w + idx * col_w
         x1 = x0 + col_w
         layout["rectangles"].append({"x0": x0, "y0": 0, "x1": x1, "y1": header_h, "fill": style["header_col_fill"], "outline": style["header_col_outline"], "width": 1})
-        layout["texts"].append({"x": (x0 + x1) / 2, "y": header_h / 2, "text": f"{date_key}\n{label_prefix} {axis_val}", "fill": "#ffffff", "font_size": 8, "bold": True, "anchor": "center", "justify": "center"})
+        layout["texts"].append({"x": (x0 + x1) / 2, "y": header_h / 2, "x0": x0 + 4, "y0": 2, "x1": x1 - 4, "y1": header_h - 2, "text": f"{date_key}\n{label_prefix} {axis_val}", "fill": "#ffffff", "font_size": 8, "bold": True, "anchor": "center", "justify": "center"})
 
     for row_idx, minute in enumerate(minutes):
         y0 = header_h + row_idx * row_h
         y1 = y0 + row_h
         time_fill = style["time_even_fill"] if row_idx % 2 == 0 else style["time_odd_fill"]
         layout["rectangles"].append({"x0": 0, "y0": y0, "x1": time_col_w, "y1": y1, "fill": time_fill, "outline": style["time_outline"], "width": 1})
-        layout["texts"].append({"x": time_col_w / 2, "y": (y0 + y1) / 2, "text": _to_ampm(minute), "fill": "#1b263b", "font_size": 8, "bold": False, "anchor": "center", "justify": "center"})
+        layout["texts"].append({"x": time_col_w / 2, "y": (y0 + y1) / 2, "x0": 2, "y0": y0, "x1": time_col_w - 2, "y1": y1, "text": _to_ampm(minute), "fill": "#1b263b", "font_size": 8, "bold": False, "anchor": "center", "justify": "center"})
         for col_idx in range(len(col_pairs)):
             x0 = time_col_w + col_idx * col_w
             x1 = x0 + col_w
@@ -190,6 +190,10 @@ def build_schedule_layout_model(
                 {
                     "x": (x0 + x1) / 2,
                     "y": (y0 + y1) / 2,
+                    "x0": x0 + 3,
+                    "y0": y0 + 2,
+                    "x1": x1 - 3,
+                    "y1": y1 - 2,
                     "text": f"{appt.get('discipline', '')}\n{appt.get('room', '')}\n{appt.get('provider', '')}\n{appt.get('program_type', 'IOP')}",
                     "fill": "#1b263b",
                     "font_size": 8,
@@ -276,6 +280,29 @@ def _hex_to_rgb(hex_color: str) -> Tuple[int, int, int]:
     return int(clean[0:2], 16), int(clean[2:4], 16), int(clean[4:6], 16)
 
 
+def _truncate_with_ellipsis(text: str, max_chars: int) -> str:
+    clean = (text or "").strip()
+    if len(clean) <= max_chars:
+        return clean
+    if max_chars <= 1:
+        return "…"
+    return clean[: max_chars - 1].rstrip() + "…"
+
+
+def _fit_text_for_box(text: str, width_px: float, height_px: float, font_px: float) -> str:
+    approx_char_w = max(4.0, font_px * 0.62)
+    max_chars_per_line = max(4, int(width_px / approx_char_w))
+    max_lines = max(1, int(height_px / max(10.0, font_px * 1.25)))
+    lines: List[str] = []
+    for raw_line in str(text or "").splitlines()[:max_lines]:
+        lines.append(_truncate_with_ellipsis(raw_line, max_chars_per_line))
+    while len(lines) < max_lines:
+        break
+    if len(str(text or "").splitlines()) > max_lines and lines:
+        lines[-1] = _truncate_with_ellipsis(lines[-1], max_chars_per_line)
+    return "\n".join(lines)
+
+
 def export_layout_to_pptx(layout: Dict[str, Any], out_path: Path, title: str) -> None:
     try:
         from pptx import Presentation
@@ -324,11 +351,14 @@ def export_layout_to_pptx(layout: Dict[str, Any], out_path: Path, title: str) ->
             continue
         x = left + int((float(text.get("x", 0)) - 50) * scale)
         y = top + int((float(text.get("y", 0)) - 14) * scale)
-        tb = slide.shapes.add_textbox(x, y, int(100 * scale), int(28 * scale))
+        box_w = int(max(30, (text.get("x1", text.get("x", 0) + 50) - text.get("x0", text.get("x", 0) - 50)) * scale))
+        box_h = int(max(16, (text.get("y1", text.get("y", 0) + 14) - text.get("y0", text.get("y", 0) - 14)) * scale))
+        tb = slide.shapes.add_textbox(x, y, box_w, box_h)
         tf = tb.text_frame
         tf.clear()
+        tf.word_wrap = True
         p = tf.paragraphs[0]
-        p.text = content[:180]
+        p.text = _fit_text_for_box(content, box_w, box_h, max(7, int(float(text.get("font_size", 8)) * scale * 1.8)))
         p.font.size = Pt(max(7, int(float(text.get("font_size", 8)) * scale * 1.8)))
         p.font.bold = bool(text.get("bold", False))
         p.alignment = PP_ALIGN.LEFT if text.get("anchor") == "w" else PP_ALIGN.CENTER

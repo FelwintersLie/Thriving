@@ -563,8 +563,8 @@ class SchedulerDesktopApp:
         ttk.Label(view_controls, text="Program Filter").pack(side="left", padx=(10, 0))
         ttk.Combobox(view_controls, textvariable=self.program_filter_var, values=["Both", "IOP", "EVAL"], state="readonly", width=10).pack(side="left", padx=4)
         ttk.Button(view_controls, text="Apply View", command=lambda: self._safe_action(self.refresh_current_grid_view)).pack(side="left", padx=8)
-        ttk.Button(view_controls, text="Export PNG (Current View)", command=lambda: self._safe_action(self.export_view_as_png)).pack(side="left", padx=6)
-        ttk.Button(view_controls, text="Export PPTX (Current Date)", command=lambda: self._safe_action(self.export_view_as_pptx)).pack(side="left", padx=6)
+        ttk.Button(view_controls, text="Export View as PNG", command=lambda: self._safe_action(self.export_view_as_png)).pack(side="left", padx=6)
+        ttk.Button(view_controls, text="Export as PowerPoint", command=lambda: self._safe_action(self.export_view_as_pptx)).pack(side="left", padx=6)
 
         self._build_auto_generator_tab(auto_tab)
         self._build_eval_generator_tab(eval_tab)
