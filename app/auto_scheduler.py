@@ -526,7 +526,7 @@ def build_eval_requests(
             "preferred_window": {"start_minute": group_start_time, "end_minute": group_start_time + group_duration_minutes},
             "group_key": f"eval_group_{eval_dates[0]}",
             "label": "EVAL Intake Group",
-            "provider_id": "NO_PROVIDER_EVAL_GROUP",
+            "provider_optional": True,
             "room_id": "Conference Room",
         }
     )

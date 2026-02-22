@@ -211,6 +211,37 @@ class SchedulerTests(unittest.TestCase):
         )
         self.assertIn("r1", schedule)
 
+    def test_provider_optional_request_uses_room_and_patient_resources_only(self):
+        providers, patients, rooms = self._core_inputs()
+        requests = [
+            SessionRequest(
+                "eval_group",
+                ("a", "b"),
+                "pt",
+                60,
+                Mode.GROUP,
+                self.date_key,
+                group_key="eval-day1",
+                room_id="gym",
+                provider_optional=True,
+            ),
+            SessionRequest("solo", ("c",), "ot", 30, Mode.INDIVIDUAL, self.date_key),
+        ]
+
+        schedule = self.engine.generate_schedule(
+            date_key=self.date_key,
+            weekday=self.weekday,
+            requests=requests,
+            providers=[providers[1]],
+            patients=patients,
+            rooms=rooms,
+            day_window=TimeWindow(8 * 60, 12 * 60),
+        )
+
+        self.assertIn("eval_group", schedule)
+        self.assertEqual(schedule["eval_group"].provider_id, "")
+        self.assertEqual(schedule["eval_group"].room_id, "gym")
+
 
 if __name__ == "__main__":
     unittest.main()

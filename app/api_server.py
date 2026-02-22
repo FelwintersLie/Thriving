@@ -112,6 +112,7 @@ def _requests(raw_list: List[Dict[str, Any]], date_key: str) -> List[SessionRequ
                 provider_id=raw.get("provider_id"),
                 provider_ids=tuple(raw.get("provider_ids", [])) if raw.get("provider_ids") else None,
                 room_id=raw.get("room_id"),
+                provider_optional=bool(raw.get("provider_optional", False)),
             )
         )
     return out

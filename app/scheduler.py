@@ -122,6 +122,7 @@ class SessionRequest:
     provider_id: Optional[str] = None
     provider_ids: Optional[Tuple[str, ...]] = None
     room_id: Optional[str] = None
+    provider_optional: bool = False
 
     @property
     def slot_count(self) -> int:
@@ -195,21 +196,23 @@ class ScheduleEngine:
 
             options: List[Assignment] = []
             rejection_counts = {"provider_discipline": 0, "provider_specific": 0, "room_discipline": 0, "room_rules": 0, "patient": 0, "provider": 0}
-            for provider in providers:
-                if req.discipline not in provider.disciplines:
-                    rejection_counts["provider_discipline"] += 1
-                    continue
-                if req.provider_id and provider.id != req.provider_id:
-                    rejection_counts["provider_specific"] += 1
-                    continue
-                if req.provider_ids and provider.id not in req.provider_ids:
-                    rejection_counts["provider_specific"] += 1
-                    continue
+            provider_candidates: List[Provider | None] = [None] if req.provider_optional else list(providers)
+            for provider in provider_candidates:
+                if provider is not None:
+                    if req.discipline not in provider.disciplines:
+                        rejection_counts["provider_discipline"] += 1
+                        continue
+                    if req.provider_id and provider.id != req.provider_id:
+                        rejection_counts["provider_specific"] += 1
+                        continue
+                    if req.provider_ids and provider.id not in req.provider_ids:
+                        rejection_counts["provider_specific"] += 1
+                        continue
 
                 for room in rooms:
                     if req.room_id and room.id != req.room_id:
                         continue
-                    if provider.allowed_rooms and room.id not in provider.allowed_rooms:
+                    if provider is not None and provider.allowed_rooms and room.id not in provider.allowed_rooms:
                         continue
                     if req.discipline not in room.allowed_disciplines:
                         rejection_counts["room_discipline"] += 1
@@ -221,7 +224,7 @@ class ScheduleEngine:
                         end = start + req.duration_minutes
                         if end > day_window.end_minute:
                             break
-                        if not provider.is_available(date_key, weekday, start, end):
+                        if provider is not None and not provider.is_available(date_key, weekday, start, end):
                             rejection_counts["provider"] += 1
                             continue
                         if not room.is_available(date_key, weekday, start, end):
@@ -235,7 +238,7 @@ class ScheduleEngine:
                         options.append(
                             Assignment(
                                 request_id=req.id,
-                                provider_id=provider.id,
+                                provider_id=provider.id if provider is not None else "",
                                 room_id=room.id,
                                 start_minute=start,
                                 end_minute=end,
@@ -272,7 +275,7 @@ class ScheduleEngine:
                 other_req = request_by_id[other_req_id]
                 if not overlaps(a, other):
                     continue
-                if a.provider_id == other.provider_id:
+                if a.provider_id and other.provider_id and a.provider_id == other.provider_id:
                     return True
                 if req_patients.intersection(other_req.patient_ids):
                     return True

@@ -2481,19 +2481,6 @@ class SchedulerDesktopApp:
 
     def generate_eval_schedule(self) -> None:
         profile_template = self._build_auto_profile_template()
-        # ensure synthetic no-provider exists for eval group
-        provider_ids = {p.get("id") for p in profile_template.get("providers", [])}
-        if "NO_PROVIDER_EVAL_GROUP" not in provider_ids:
-            profile_template["providers"].append(
-                {
-                    "id": "NO_PROVIDER_EVAL_GROUP",
-                    "name": "EVAL Group (No Provider)",
-                    "disciplines": ["Evaluation Group"],
-                    "templates": [{"weekday": wd, "windows": [{"start_minute": GRID_START_MINUTE, "end_minute": GRID_END_MINUTE}]} for wd in range(5)],
-                    "exceptions": [],
-                    "allowed_rooms": ["Conference Room"],
-                }
-            )
         start = parse_date_parts(self.eval_start_year_var.get(), self.eval_start_month_var.get(), self.eval_start_day_var.get())
         result = generate_eval_schedule(
             profile_template=profile_template,
