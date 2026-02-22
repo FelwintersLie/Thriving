@@ -154,3 +154,24 @@ def room_is_available(
         start_minute=start_minute,
         end_minute=end_minute,
     )
+
+
+def with_default_eval_group_reservation(rules: Dict[str, Any] | None) -> Dict[str, Any]:
+    """Ensure Conference Room is blocked Mon/Tue 08:30-11:00 for eval groups."""
+    normalized = normalize_room_rules(rules or {}, valid_rooms=(rules or {}).get("rooms", {}).keys() or ["Conference Room"])
+    conference = normalized.setdefault("rooms", {}).setdefault(
+        "Conference Room",
+        {
+            "unavailable_weekly": {i: [] for i in range(5)},
+            "unavailable_dates": [],
+            "available_only_weekly": {i: [] for i in range(5)},
+            "available_only_dates": [],
+        },
+    )
+    window = {"start_minute": 8 * 60 + 30, "end_minute": 11 * 60}
+    for weekday in (0, 1):
+        weekly = conference["unavailable_weekly"].setdefault(weekday, [])
+        if window not in weekly:
+            weekly.append(dict(window))
+            weekly.sort(key=lambda w: (w["start_minute"], w["end_minute"]))
+    return normalized

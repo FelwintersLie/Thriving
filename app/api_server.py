@@ -134,7 +134,7 @@ def _assignments_from_dict(raw: Dict[str, Dict[str, Any]]) -> Dict[str, Assignme
     return {
         request_id: Assignment(
             request_id=raw_assignment["request_id"],
-            provider_id=raw_assignment["provider_id"],
+            provider_id=raw_assignment.get("provider_id"),
             room_id=raw_assignment["room_id"],
             start_minute=int(raw_assignment["start_minute"]),
             end_minute=int(raw_assignment["end_minute"]),

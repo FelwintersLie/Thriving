@@ -96,6 +96,49 @@ class SchedulerTests(unittest.TestCase):
         self.assertEqual(schedule["grp"].mode, Mode.GROUP)
         self.assertEqual(schedule["grp"].room_id, "gym")
 
+    def test_group_sessions_can_share_room_when_overlapping(self):
+        providers, patients, rooms = self._core_inputs()
+        requests = [
+            SessionRequest("g1", ("a", "b"), "pt", 60, Mode.GROUP, self.date_key, group_key="g1"),
+            SessionRequest("g2", ("c",), "pt", 60, Mode.GROUP, self.date_key, group_key="g2"),
+        ]
+        schedule = self.engine.generate_schedule(
+            date_key=self.date_key,
+            weekday=self.weekday,
+            requests=requests,
+            providers=providers,
+            patients=patients,
+            rooms=rooms,
+            day_window=TimeWindow(8 * 60, 12 * 60),
+        )
+        self.assertEqual(schedule["g1"].room_id, schedule["g2"].room_id)
+
+    def test_room_only_session_can_schedule_without_provider(self):
+        _, patients, rooms = self._core_inputs()
+        requests = [
+            SessionRequest(
+                "eval_group",
+                ("a", "b"),
+                "pt",
+                60,
+                Mode.GROUP,
+                self.date_key,
+                group_key="eval",
+                provider_id="NO_PROVIDER",
+                room_id="gym",
+            )
+        ]
+        schedule = self.engine.generate_schedule(
+            date_key=self.date_key,
+            weekday=self.weekday,
+            requests=requests,
+            providers=[],
+            patients=patients,
+            rooms=rooms,
+            day_window=TimeWindow(8 * 60, 12 * 60),
+        )
+        self.assertIsNone(schedule["eval_group"].provider_id)
+
     def test_reoptimization_prefers_minimal_changes(self):
         providers, patients, rooms = self._core_inputs()
         requests = [

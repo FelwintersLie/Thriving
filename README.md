@@ -208,6 +208,9 @@ Recommended first test tonight:
 - Auto Generator now has two linked builders:
   - **Section A: Appointment Requirements** (required sessions/frequency/windows/priority),
   - **Section B: Provider Availability Rules** (weekly availability templates by provider + live Mon-Fri preview grid).
+
+- Unified scheduling now supports both program types in one appointment model (`program_type`, `appointment_id`, `soft_locked`) with IOP + EVAL combined generation and move reporting.
+- EVAL day-1 intake group can be scheduled as a room-only session (no provider resource), and Conference Room Monday/Tuesday 08:30-11:00 reservation can be enforced via room rules defaults.
 - Requirement rows now support add/edit/duplicate/remove and include **sessions per week**.
 - Provider availability rules now persist in the provider catalog schema so updates are reused by the generator immediately.
 
@@ -274,4 +277,3 @@ Recommended first test tonight:
 - Dependency notes (if not already installed):
   - `python3 -m pip install Pillow` for PNG export
   - `python3 -m pip install python-pptx` for PPTX export
-
