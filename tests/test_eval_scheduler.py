@@ -18,6 +18,7 @@ class EvalSchedulerTests(unittest.TestCase):
         self.assertEqual(group["room_id"], "Conference Room")
         self.assertEqual(group["mode"], "group")
         self.assertEqual(group["patient_ids"], ["E1", "E2"])
+        self.assertTrue(group["provider_optional"])
 
 
 if __name__ == "__main__":

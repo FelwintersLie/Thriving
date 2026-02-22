@@ -253,6 +253,7 @@ Recommended first test tonight:
   - cohort selection (`Mon-Wed` or `Tue-Thu`),
   - EVAL patient count,
   - day-1 eval group start (`0830` / `0930` / `1000`) and duration,
+  - room-only day-1 EVAL intake group in Conference Room (no provider resource consumed),
   - combined generation alongside IOP.
 - New **Generate Combined Schedule** mode tries to place IOP and EVAL together while honoring existing soft-locked appointments.
 - New manual-grid controls support:
