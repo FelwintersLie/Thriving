@@ -104,6 +104,9 @@ def load_provider_catalog_entries(defaults: List[str]) -> List[Dict[str, Any]]:
                         "availability_templates": item.get("availability_templates") or item.get("templates") or [],
                         "exceptions": item.get("exceptions") or [],
                         "allowed_rooms": item.get("allowed_rooms") or ["Any compatible room"],
+                        "enforce_lunch_break": bool(item.get("enforce_lunch_break", False)),
+                        "lunch_earliest_start_minute": item.get("lunch_earliest_start_minute", 11 * 60 + 30),
+                        "lunch_latest_start_minute": item.get("lunch_latest_start_minute", 13 * 60),
                     }
                 )
             else:
@@ -119,6 +122,9 @@ def load_provider_catalog_entries(defaults: List[str]) -> List[Dict[str, Any]]:
                         "availability_templates": [],
                         "exceptions": [],
                         "allowed_rooms": ["Any compatible room"],
+                        "enforce_lunch_break": False,
+                        "lunch_earliest_start_minute": 11 * 60 + 30,
+                        "lunch_latest_start_minute": 13 * 60,
                     }
                 )
 

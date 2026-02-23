@@ -144,6 +144,9 @@ def normalize_provider_entry(
         "allowed_rooms": sorted(dict.fromkeys(allowed_rooms), key=lambda x: x.split()[0].lower()),
         "availability_templates": templates,
         "exceptions": exceptions,
+        "enforce_lunch_break": bool(entry.get("enforce_lunch_break", False)),
+        "lunch_earliest_start_minute": int(entry.get("lunch_earliest_start_minute", 11 * 60 + 30) or (11 * 60 + 30)),
+        "lunch_latest_start_minute": int(entry.get("lunch_latest_start_minute", 13 * 60) or (13 * 60)),
     }
 
 
@@ -195,6 +198,8 @@ def normalize_provider_catalog(
 
 def provider_is_available(profile: Dict[str, Any], *, date_key: str, weekday: int, start_minute: int, end_minute: int) -> bool:
     templates = profile.get("availability_templates") or []
+    exceptions = profile.get("exceptions", []) or []
+    has_any_exceptions = bool(exceptions)
     in_template = False
     for tmpl in templates:
         if int(tmpl.get("weekday", -1)) != weekday:
@@ -207,10 +212,17 @@ def provider_is_available(profile: Dict[str, Any], *, date_key: str, weekday: in
                 break
         if in_template:
             break
-    if not in_template and not templates:
+    if not in_template and not templates and not has_any_exceptions:
         in_template = True
 
-    for ex in profile.get("exceptions", []):
+    if bool(profile.get("enforce_lunch_break", False)):
+        lunch_start = int(profile.get("lunch_earliest_start_minute", 11 * 60 + 30))
+        lunch_latest = int(profile.get("lunch_latest_start_minute", 13 * 60))
+        lunch_window_end = lunch_latest + 30
+        if not (end_minute <= lunch_start or start_minute >= lunch_window_end):
+            return False
+
+    for ex in exceptions:
         ex_date = str(ex.get("date") or ex.get("date_key") or "")
         if ex_date != date_key:
             continue

@@ -37,6 +37,21 @@ class WindowsGuiHelperTests(unittest.TestCase):
         self.assertEqual(len(rooms), len(PREDEFINED_ROOMS))
         self.assertEqual(rooms[0]["id"], PREDEFINED_ROOMS[0])
 
+    def test_build_room_records_respects_room_rules_discipline_and_tier(self):
+        rooms = build_room_records(
+            {
+                "rooms": {
+                    "Room 1": {
+                        "allowed_disciplines": ["Physical Therapy"],
+                        "room_preference_tier": 2,
+                    }
+                }
+            }
+        )
+        room1 = next(r for r in rooms if r["id"] == "Room 1")
+        self.assertEqual(room1["allowed_disciplines"], ["Physical Therapy"])
+        self.assertEqual(room1["room_preference_tier"], 2)
+
     def test_build_provider_records_uses_names(self):
         providers = build_provider_records(["A", "B"], day_start=450, day_end=1080)
         self.assertEqual(providers[0]["id"], "A")

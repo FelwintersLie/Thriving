@@ -54,9 +54,14 @@ class Provider:
     templates: List[ProviderTemplate] = field(default_factory=list)
     exceptions: List[ProviderException] = field(default_factory=list)
     allowed_rooms: set[str] = field(default_factory=set)
+    enforce_lunch_break: bool = False
+    lunch_earliest_start_minute: int = 11 * 60 + 30
+    lunch_latest_start_minute: int = 13 * 60
 
     def is_available(self, date_key: str, weekday: int, start: int, end: int) -> bool:
         in_template = any(w.contains(start, end) for t in self.templates if t.weekday == weekday for w in t.windows)
+        if not in_template and not self.templates and not self.exceptions:
+            in_template = True
         if not in_template:
             return False
 
@@ -91,6 +96,7 @@ class Room:
     unavailable_dates: Dict[str, List[TimeWindow]] = field(default_factory=dict)
     available_only_weekly: Dict[int, List[TimeWindow]] = field(default_factory=dict)
     available_only_dates: Dict[str, List[TimeWindow]] = field(default_factory=dict)
+    room_preference_tier: int = 0
 
     def is_available(self, date_key: str, weekday: int, start: int, end: int) -> bool:
         for window in self.unavailable_weekly.get(weekday, []):
@@ -200,6 +206,11 @@ class ScheduleEngine:
             candidate_map=candidate_map,
             previous_assignments=previous_assignments,
             max_backtrack_states=max_backtrack_states,
+            rooms=rooms,
+            providers=providers,
+            date_key=date_key,
+            weekday=weekday,
+            day_window=day_window,
         )
         return solution
 
@@ -307,12 +318,18 @@ class ScheduleEngine:
         candidate_map: Dict[str, List[Assignment]],
         previous_assignments: Dict[str, Assignment],
         max_backtrack_states: Optional[int],
+        rooms: Sequence[Room],
+        providers: Sequence[Provider],
+        date_key: str,
+        weekday: int,
+        day_window: TimeWindow,
     ) -> Dict[str, Assignment]:
         backtrack_limit = max_backtrack_states or MAX_BACKTRACK_STATES
         backtrack_limit = max(1000, min(int(backtrack_limit), MAX_BACKTRACK_STATES_HARD_CAP))
         request_by_id = {r.id: r for r in requests}
         sorted_ids = sorted([r.id for r in requests], key=lambda rid: len(candidate_map[rid]))
         fixed_assignments = [a for rid, a in previous_assignments.items() if rid not in request_by_id]
+        room_by_id = {room.id: room for room in rooms}
 
         def overlaps(a: Assignment, b: Assignment) -> bool:
             return not (a.end_minute <= b.start_minute or a.start_minute >= b.end_minute)
@@ -347,6 +364,8 @@ class ScheduleEngine:
                 penalty += 10
             if req.preferred_window and not req.preferred_window.contains(candidate.start_minute, candidate.end_minute):
                 penalty += 3
+            room_tier = room_by_id.get(candidate.room_id).room_preference_tier if candidate.room_id in room_by_id else 0
+            penalty += max(0, int(room_tier))
             return penalty
 
         best: Optional[Dict[str, Assignment]] = None
@@ -354,12 +373,35 @@ class ScheduleEngine:
         states = 0
         conflict_logs = 0
 
+        provider_by_id = {p.id: p for p in providers}
+
+        def _has_lunch_slot(provider: Provider, solution: Dict[str, Assignment]) -> bool:
+            if not provider.enforce_lunch_break:
+                return True
+            start_bound = max(day_window.start_minute, int(provider.lunch_earliest_start_minute))
+            end_bound = min(day_window.end_minute - 30, int(provider.lunch_latest_start_minute))
+            if end_bound < start_bound:
+                return True
+            provider_assignments = [a for a in list(solution.values()) + fixed_assignments if a.provider_id == provider.id]
+            for start in range(start_bound, end_bound + 1, SLOT_MINUTES):
+                end = start + 30
+                if not provider.is_available(date_key, weekday, start, end):
+                    continue
+                occupied = any(not (end <= a.start_minute or start >= a.end_minute) for a in provider_assignments)
+                if not occupied:
+                    return True
+            return False
+
         def dfs(index: int, assigned: Dict[str, Assignment], running_penalty: int) -> None:
             nonlocal best, best_score, states, conflict_logs
             states += 1
             if states > backtrack_limit:
                 raise UnschedulableError("Search limit reached while scheduling. Narrow windows or increase solver effort.")
             if index == len(sorted_ids):
+                for provider in provider_by_id.values():
+                    if not _has_lunch_slot(provider, assigned):
+                        self._log_constraint_failure("lunch", f"provider {provider.id} has no 30-min lunch slot")
+                        return
                 if best_score is None or running_penalty < best_score:
                     best = dict(assigned)
                     best_score = running_penalty

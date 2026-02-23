@@ -222,12 +222,14 @@ Recommended first test tonight:
   - up to 5 disciplines,
   - allowed rooms,
   - weekly availability templates (Mon-Fri, multiple windows/day),
-  - date exceptions (`unavailable` or `added` windows).
+  - date exceptions (`unavailable` or `added` windows),
+  - optional lunch policy (enforced 30-min lunch with earliest/latest lunch start range).
 - Save/Update edits profiles in place and persists them to both `data/provider_catalog.json` and `data/provider_profiles.json`.
 - Manual Scheduler integration:
   - Add Appointment provider dropdown now pulls from Provider Profiles.
   - Selecting a provider auto-fills discipline (if profile discipline is set) and filters room options to allowed rooms.
   - Appointment add validates provider availability using selected date + weekly template + exceptions.
+  - If a provider has no templates and no exceptions, they default to all-day availability within planning day bounds.
 - Auto Generator integration:
   - Requirement provider dropdowns pull from Provider Profiles.
   - `Any provider` + discipline only selects providers with matching profile discipline.
@@ -245,6 +247,7 @@ Recommended first test tonight:
 - Saved in `data/room_rules.json` and applied immediately.
 - Manual Scheduler blocks Add Appointment when selected room violates room rules.
 - Auto-generator treats room rules as hard constraints and includes room-rule rejection counts in infeasibility details.
+- Room Rules also support discipline compatibility per room and room preference tiers (`0..3`) used as soft room penalties in auto-generation.
 - Core day scheduler now uses a constraint-based optimization/backtracking engine with composable hard constraints (room/provider/patient/resource) and soft scoring (stability/preferences), plus diagnostics logs for constraint failures and scheduling decisions.
 
 

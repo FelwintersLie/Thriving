@@ -298,6 +298,42 @@ class SchedulerTests(unittest.TestCase):
             )
         self.assertTrue(any("constraint_failure" in d for d in self.engine.last_diagnostics))
 
+    def test_room_tier_soft_penalty_prefers_lower_tier(self):
+        providers, patients, rooms = self._core_inputs()
+        rooms[0].room_preference_tier = 3
+        rooms[2].room_preference_tier = 0
+        requests = [SessionRequest("r_pref", ("a",), "pt", 30, Mode.INDIVIDUAL, self.date_key)]
+        schedule = self.engine.generate_schedule(
+            date_key=self.date_key,
+            weekday=self.weekday,
+            requests=requests,
+            providers=providers,
+            patients=patients,
+            rooms=rooms,
+            day_window=TimeWindow(8 * 60, 12 * 60),
+        )
+        self.assertEqual(schedule["r_pref"].room_id, "flex")
+
+    def test_lunch_enforcement_requires_free_30_min_slot(self):
+        providers, patients, rooms = self._core_inputs()
+        providers[0].enforce_lunch_break = True
+        providers[0].lunch_earliest_start_minute = 8 * 60
+        providers[0].lunch_latest_start_minute = 8 * 60
+        requests = [
+            SessionRequest("r1", ("a",), "pt", 30, Mode.INDIVIDUAL, self.date_key),
+            SessionRequest("r2", ("b",), "pt", 30, Mode.INDIVIDUAL, self.date_key),
+        ]
+        with self.assertRaises(Exception):
+            self.engine.generate_schedule(
+                date_key=self.date_key,
+                weekday=self.weekday,
+                requests=requests,
+                providers=providers,
+                patients=patients,
+                rooms=rooms,
+                day_window=TimeWindow(8 * 60, 9 * 60),
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

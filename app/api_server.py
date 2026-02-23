@@ -52,6 +52,9 @@ def _providers(raw_list: List[Dict[str, Any]]) -> List[Provider]:
                 templates=templates,
                 exceptions=exceptions,
                 allowed_rooms=set(raw.get("allowed_rooms", [])) if raw.get("allowed_rooms") else set(),
+                enforce_lunch_break=bool(raw.get("enforce_lunch_break", False)),
+                lunch_earliest_start_minute=int(raw.get("lunch_earliest_start_minute", 11 * 60 + 30)),
+                lunch_latest_start_minute=int(raw.get("lunch_latest_start_minute", 13 * 60)),
             )
         )
     return providers
@@ -89,6 +92,7 @@ def _rooms(raw_list: List[Dict[str, Any]]) -> List[Room]:
                 unavailable_dates=unavailable_dates,
                 available_only_weekly=available_only_weekly,
                 available_only_dates=available_only_dates,
+                room_preference_tier=int(raw.get("room_preference_tier", 0) or 0),
             )
         )
     return rooms

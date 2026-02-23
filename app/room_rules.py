@@ -81,8 +81,28 @@ def normalize_room_rules(raw: Dict[str, Any] | None, *, valid_rooms: Iterable[st
             "unavailable_dates": _normalize_date_rules(room_raw.get("unavailable_dates", []), f"{room}.unavailable_dates"),
             "available_only_weekly": _normalize_weekly(room_raw.get("available_only_weekly", {}), f"{room}.available_only_weekly"),
             "available_only_dates": _normalize_date_rules(room_raw.get("available_only_dates", []), f"{room}.available_only_dates"),
+            "allowed_disciplines": sorted({str(d).strip() for d in room_raw.get("allowed_disciplines", []) if str(d).strip()}),
+            "room_preference_tier": max(0, min(3, int(room_raw.get("room_preference_tier", 0) or 0))),
         }
     return result
+
+
+def is_room_discipline_compatible(rules: Dict[str, Any], room_id: str, discipline: str) -> bool:
+    rooms = rules.get("rooms", {}) if isinstance(rules, dict) else {}
+    room = rooms.get(room_id, {}) if isinstance(rooms, dict) else {}
+    allowed = room.get("allowed_disciplines", []) if isinstance(room, dict) else []
+    if not allowed:
+        return True
+    return discipline in allowed
+
+
+def room_preference_tier(rules: Dict[str, Any], room_id: str) -> int:
+    rooms = rules.get("rooms", {}) if isinstance(rules, dict) else {}
+    room = rooms.get(room_id, {}) if isinstance(rooms, dict) else {}
+    try:
+        return max(0, min(3, int(room.get("room_preference_tier", 0))))
+    except Exception:
+        return 0
 
 
 def _overlaps(start_a: int, end_a: int, start_b: int, end_b: int) -> bool:

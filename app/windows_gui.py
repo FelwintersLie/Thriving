@@ -35,7 +35,7 @@ from app.persistence import (
 )
 from app.profile_io import load_profile, save_profile, validate_profile
 from app.provider_catalog import normalize_provider_catalog, provider_is_available
-from app.room_rules import room_is_available
+from app.room_rules import is_room_discipline_compatible, room_is_available, room_preference_tier
 from app.windows_program import save_json
 from app.schedule_exports import (
     build_schedule_layout_model,
@@ -107,6 +107,15 @@ DEFAULT_PROVIDER_NAMES = [
     "Shawn Kane",
     "Wesley Cole",
 ]
+
+ROOM_TIER_DEFAULTS = {
+    "Suite 1": 1,
+    "Suite 2": 1,
+    "Suite 3": 1,
+    "Brittany's Office": 2,
+    "Conference Room": 2,
+    "Jason's Office": 3,
+}
 
 DISCIPLINE_COLORS = {
     "Primary Care": "#7cb5ec",
@@ -307,6 +316,9 @@ def build_provider_records_from_profiles(provider_profiles: List[Dict[str, Any]]
                 "templates": templates,
                 "exceptions": exceptions,
                 "allowed_rooms": allowed_rooms,
+                "enforce_lunch_break": bool(profile.get("enforce_lunch_break", False)),
+                "lunch_earliest_start_minute": int(profile.get("lunch_earliest_start_minute", 11 * 60 + 30)),
+                "lunch_latest_start_minute": int(profile.get("lunch_latest_start_minute", 13 * 60)),
             }
         )
 
@@ -322,7 +334,8 @@ def build_room_records(room_rules: Dict[str, Any] | None = None) -> List[Dict[st
                 "id": room,
                 "name": room,
                 "capacity": 10,
-                "allowed_disciplines": list(DISCIPLINES),
+                "allowed_disciplines": rr.get("allowed_disciplines") or list(DISCIPLINES),
+                "room_preference_tier": int(rr.get("room_preference_tier", 0) or 0),
                 "unavailable_weekly": rr.get("unavailable_weekly", {}),
                 "unavailable_dates": _date_rule_list_to_map(rr.get("unavailable_dates", [])),
                 "available_only_weekly": rr.get("available_only_weekly", {}),
@@ -450,6 +463,13 @@ class SchedulerDesktopApp:
             windows = conf.setdefault("unavailable_weekly", {}).setdefault(wd, [])
             if not any(int(w.get("start_minute", -1)) == 8 * 60 + 30 and int(w.get("end_minute", -1)) == 11 * 60 for w in windows):
                 windows.append({"start_minute": 8 * 60 + 30, "end_minute": 11 * 60})
+        for room_name in PREDEFINED_ROOMS:
+            bucket = self.room_rules.setdefault("rooms", {}).setdefault(
+                room_name,
+                {"unavailable_weekly": {i: [] for i in range(5)}, "unavailable_dates": [], "available_only_weekly": {i: [] for i in range(5)}, "available_only_dates": []},
+            )
+            bucket.setdefault("allowed_disciplines", list(DISCIPLINES))
+            bucket.setdefault("room_preference_tier", ROOM_TIER_DEFAULTS.get(room_name, 0))
         save_room_rules(self.room_rules, valid_rooms=PREDEFINED_ROOMS)
         self.last_generated_schedule = load_last_generated_schedule()
         self.last_result: Dict[str, Any] | None = None
@@ -952,6 +972,18 @@ class SchedulerDesktopApp:
         self.provider_exception_list.grid(row=1, column=0, columnspan=6, sticky="ew", pady=(4, 0))
         row += 1
 
+        lunch = ttk.Labelframe(right, text="Lunch", padding=6)
+        lunch.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        self.provider_lunch_enforce_var = tk.BooleanVar(value=False)
+        self.provider_lunch_earliest_var = tk.StringVar(value="1130")
+        self.provider_lunch_latest_var = tk.StringVar(value="1300")
+        ttk.Checkbutton(lunch, text="Enforce 30-min lunch break", variable=self.provider_lunch_enforce_var).grid(row=0, column=0, columnspan=2, sticky="w")
+        ttk.Label(lunch, text="Earliest Start").grid(row=1, column=0, sticky="w")
+        ttk.Combobox(lunch, textvariable=self.provider_lunch_earliest_var, values=time_choices, state="readonly", width=10).grid(row=2, column=0, padx=2)
+        ttk.Label(lunch, text="Latest Start").grid(row=1, column=1, sticky="w")
+        ttk.Combobox(lunch, textvariable=self.provider_lunch_latest_var, values=time_choices, state="readonly", width=10).grid(row=2, column=1, padx=2)
+        row += 1
+
         self.provider_profile_preview_canvas = tk.Canvas(right, width=620, height=180, bg="white", highlightthickness=1, highlightbackground="#ced4da")
         self.provider_profile_preview_canvas.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         row += 1
@@ -995,8 +1027,18 @@ class SchedulerDesktopApp:
         ttk.Label(right, text="Room").grid(row=0, column=0, sticky="w")
         ttk.Entry(right, textvariable=self.room_rule_selected_var, state="readonly", width=24).grid(row=0, column=1, sticky="w", padx=4)
 
-        ttk.Label(right, text="Discipline compatibility").grid(row=1, column=0, sticky="w")
-        ttk.Label(right, text="All configured disciplines", foreground="#6c757d").grid(row=1, column=1, sticky="w", padx=4)
+        ttk.Label(right, text="Allowed Disciplines").grid(row=1, column=0, sticky="nw")
+        disciplines_frame = ttk.Frame(right)
+        disciplines_frame.grid(row=1, column=1, sticky="w", padx=4)
+        self.room_allowed_discipline_vars = {}
+        for idx, disc in enumerate(DISCIPLINES):
+            var = tk.BooleanVar(value=True)
+            self.room_allowed_discipline_vars[disc] = var
+            ttk.Checkbutton(disciplines_frame, text=disc, variable=var).grid(row=idx // 2, column=idx % 2, sticky="w", padx=(0, 8))
+
+        self.room_tier_var = tk.StringVar(value="0")
+        ttk.Label(right, text="Room Preference Tier").grid(row=2, column=0, sticky="w", pady=(6, 0))
+        ttk.Combobox(right, textvariable=self.room_tier_var, values=["0", "1", "2", "3"], state="readonly", width=6).grid(row=2, column=1, sticky="w", padx=4, pady=(6, 0))
 
         self.room_rule_weekday_var = tk.StringVar(value="Monday")
         self.room_rule_start_var = tk.StringVar(value="1100")
@@ -1004,7 +1046,7 @@ class SchedulerDesktopApp:
         self.room_rule_type_var = tk.StringVar(value="unavailable")
 
         weekly = ttk.Labelframe(right, text="Weekly rules", padding=6)
-        weekly.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        weekly.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         ttk.Combobox(weekly, textvariable=self.room_rule_weekday_var, values=weekdays, state="readonly", width=12).grid(row=0, column=0, padx=2)
         ttk.Combobox(weekly, textvariable=self.room_rule_start_var, values=time_choices, state="readonly", width=10).grid(row=0, column=1, padx=2)
         ttk.Combobox(weekly, textvariable=self.room_rule_end_var, values=time_choices, state="readonly", width=10).grid(row=0, column=2, padx=2)
@@ -1020,7 +1062,7 @@ class SchedulerDesktopApp:
         self.room_rule_date_type_var = tk.StringVar(value="unavailable")
 
         dates = ttk.Labelframe(right, text="Date-specific exceptions", padding=6)
-        dates.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        dates.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         ttk.Entry(dates, textvariable=self.room_rule_date_var, width=12).grid(row=0, column=0, padx=2)
         ttk.Combobox(dates, textvariable=self.room_rule_date_start_var, values=time_choices, state="readonly", width=10).grid(row=0, column=1, padx=2)
         ttk.Combobox(dates, textvariable=self.room_rule_date_end_var, values=time_choices, state="readonly", width=10).grid(row=0, column=2, padx=2)
@@ -1031,10 +1073,10 @@ class SchedulerDesktopApp:
         self.room_date_rules_list.grid(row=1, column=0, columnspan=6, sticky="ew", pady=(4, 0))
 
         self.room_rules_preview_canvas = tk.Canvas(right, width=620, height=180, bg="white", highlightthickness=1, highlightbackground="#ced4da")
-        self.room_rules_preview_canvas.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        self.room_rules_preview_canvas.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(8, 0))
 
         btns = ttk.Frame(right)
-        btns.grid(row=5, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        btns.grid(row=6, column=0, columnspan=2, sticky="w", pady=(8, 0))
         ttk.Button(btns, text="Save/Update", command=lambda: self._safe_action(self.save_room_rules)).pack(side="left", padx=4)
         ttk.Button(btns, text="Revert", command=lambda: self._safe_action(self.revert_room_rules_editor)).pack(side="left", padx=4)
         ttk.Button(btns, text="Clear rules for room", command=lambda: self._safe_action(self.clear_selected_room_rules)).pack(side="left", padx=4)
@@ -1312,6 +1354,12 @@ class SchedulerDesktopApp:
         self.provider_profile_name_var.set(profile.get("provider_name", ""))
         disciplines = profile.get("disciplines") or ([] if not profile.get("discipline") else [profile.get("discipline")])
         self.provider_profile_disciplines_var.set(", ".join([str(d).strip() for d in disciplines if str(d).strip()]))
+        if hasattr(self, "provider_lunch_enforce_var"):
+            self.provider_lunch_enforce_var.set(bool(profile.get("enforce_lunch_break", False)))
+            early = int(profile.get("lunch_earliest_start_minute", 11 * 60 + 30))
+            late = int(profile.get("lunch_latest_start_minute", 13 * 60))
+            self.provider_lunch_earliest_var.set(f"{early//60:02d}{early%60:02d}")
+            self.provider_lunch_latest_var.set(f"{late//60:02d}{late%60:02d}")
 
         allowed = set(profile.get("allowed_rooms") or ["Any compatible room"])
         for room_name, var in self.allowed_room_vars.items():
@@ -1381,6 +1429,9 @@ class SchedulerDesktopApp:
             "allowed_rooms": self._collect_editor_allowed_rooms(),
             "availability_templates": self._selected_provider_profile().get("availability_templates", []) if self._selected_provider_profile() else [],
             "exceptions": self._selected_provider_profile().get("exceptions", []) if self._selected_provider_profile() else [],
+            "enforce_lunch_break": bool(self.provider_lunch_enforce_var.get()) if hasattr(self, "provider_lunch_enforce_var") else False,
+            "lunch_earliest_start_minute": parse_time_input(self.provider_lunch_earliest_var.get()) if hasattr(self, "provider_lunch_earliest_var") else 11 * 60 + 30,
+            "lunch_latest_start_minute": parse_time_input(self.provider_lunch_latest_var.get()) if hasattr(self, "provider_lunch_latest_var") else 13 * 60,
         }
 
     def save_selected_provider_profile(self) -> None:
@@ -1417,6 +1468,10 @@ class SchedulerDesktopApp:
         self.provider_profile_id_var.set(self._next_provider_id())
         self.provider_profile_name_var.set("")
         self.provider_profile_disciplines_var.set("")
+        if hasattr(self, "provider_lunch_enforce_var"):
+            self.provider_lunch_enforce_var.set(False)
+            self.provider_lunch_earliest_var.set("1130")
+            self.provider_lunch_latest_var.set("1300")
         self.allowed_room_vars["Any compatible room"].set(True)
         self._on_allowed_room_toggle()
         self.provider_availability_list.delete(0, self.tk.END)
@@ -1572,6 +1627,8 @@ class SchedulerDesktopApp:
                 "unavailable_dates": [],
                 "available_only_weekly": {i: [] for i in range(5)},
                 "available_only_dates": [],
+                "allowed_disciplines": list(DISCIPLINES),
+                "room_preference_tier": ROOM_TIER_DEFAULTS.get(room_name, 0),
             }
         return rooms[room_name]
 
@@ -1649,6 +1706,10 @@ class SchedulerDesktopApp:
             self.room_date_rules_list.insert(self.tk.END, f"{w['date']} unavailable {w['start_minute']//60:02d}:{w['start_minute']%60:02d}-{w['end_minute']//60:02d}:{w['end_minute']%60:02d}")
         for w in bucket.get("available_only_dates", []):
             self.room_date_rules_list.insert(self.tk.END, f"{w['date']} available-only {w['start_minute']//60:02d}:{w['start_minute']%60:02d}-{w['end_minute']//60:02d}:{w['end_minute']%60:02d}")
+        allowed = set(bucket.get("allowed_disciplines") or DISCIPLINES)
+        for disc, var in getattr(self, "room_allowed_discipline_vars", {}).items():
+            var.set(disc in allowed)
+        self.room_tier_var.set(str(int(bucket.get("room_preference_tier", 0) or 0)))
         self._render_room_rules_preview(room_name)
 
     def add_room_weekly_rule(self) -> None:
@@ -1718,6 +1779,10 @@ class SchedulerDesktopApp:
         self.revert_room_rules_editor()
 
     def save_room_rules(self) -> None:
+        room_name = self._selected_room_name()
+        bucket = self._room_rule_bucket(room_name)
+        bucket["allowed_disciplines"] = [d for d, v in self.room_allowed_discipline_vars.items() if v.get()]
+        bucket["room_preference_tier"] = int(self.room_tier_var.get())
         self.room_rules = self.room_rules
         save_room_rules(self.room_rules, valid_rooms=PREDEFINED_ROOMS)
         if self.loaded_profile:
@@ -1733,6 +1798,8 @@ class SchedulerDesktopApp:
             "unavailable_dates": [],
             "available_only_weekly": {i: [] for i in range(5)},
             "available_only_dates": [],
+            "allowed_disciplines": list(DISCIPLINES),
+            "room_preference_tier": ROOM_TIER_DEFAULTS.get(room_name, 0),
         }
         self.revert_room_rules_editor()
         self.save_room_rules()
@@ -2007,7 +2074,17 @@ class SchedulerDesktopApp:
         if name in self.provider_catalog:
             raise ValueError("Provider already exists")
         self.provider_catalog = sorted(self.provider_catalog + [name])
-        self.provider_profiles.append({"provider_id": name, "provider_name": name, "discipline": "", "availability_templates": [], "exceptions": []})
+        self.provider_profiles.append({
+            "provider_id": name,
+            "provider_name": name,
+            "discipline": "",
+            "disciplines": [],
+            "availability_templates": [],
+            "exceptions": [],
+            "enforce_lunch_break": False,
+            "lunch_earliest_start_minute": 11 * 60 + 30,
+            "lunch_latest_start_minute": 13 * 60,
+        })
         self._persist_provider_catalog()
         if self.loaded_profile:
             self._sync_profile_resources(self.loaded_profile)
@@ -2075,9 +2152,13 @@ class SchedulerDesktopApp:
                     "provider_id": selected_name,
                     "provider_name": selected_name,
                     "discipline": "",
+                    "disciplines": [],
                     "availability_templates": [{"weekday": weekday, "windows": [{"start_minute": start, "end_minute": end}]}],
                     "exceptions": [],
-            "allowed_rooms": list(PREDEFINED_ROOMS),
+                    "allowed_rooms": list(PREDEFINED_ROOMS),
+                    "enforce_lunch_break": False,
+                    "lunch_earliest_start_minute": 11 * 60 + 30,
+                    "lunch_latest_start_minute": 13 * 60,
                 }
             )
 
@@ -2091,9 +2172,10 @@ class SchedulerDesktopApp:
 
     def _allowed_rooms_for_provider(self, provider_profile: Dict[str, Any], discipline: str) -> List[str]:
         allowed = provider_profile.get("allowed_rooms") or ["Any compatible room"]
+        compatible = [r for r in PREDEFINED_ROOMS if is_room_discipline_compatible(self.room_rules, r, discipline)]
         if "Any compatible room" in allowed:
-            return list(PREDEFINED_ROOMS)
-        return [r for r in allowed if r in PREDEFINED_ROOMS]
+            return compatible
+        return [r for r in allowed if r in compatible]
 
     def _on_manual_provider_selected(self) -> None:
         provider_name = self.appt_provider_var.get().strip()
@@ -2153,6 +2235,9 @@ class SchedulerDesktopApp:
         allowed_rooms = self._allowed_rooms_for_provider(provider_profile, discipline)
         if room_id not in allowed_rooms:
             raise ValueError("Selected room is not allowed for this provider profile")
+        if not is_room_discipline_compatible(self.room_rules, room_id, discipline):
+            raise ValueError("Selected room is not compatible with the appointment discipline")
+        room_tier_warning = room_preference_tier(self.room_rules, room_id) >= 3
 
         start_minute = parse_time_input(self.appt_start_var.get())
         end_minute = parse_time_input(self.appt_end_var.get())
@@ -2208,7 +2293,10 @@ class SchedulerDesktopApp:
         self.selected_request_id = None
         live_result = build_live_result_from_profile(profile)
         self.last_result = live_result
-        self.status_var.set(f"Status: Added appointment {req_id}")
+        status_text = f"Status: Added appointment {req_id}"
+        if room_tier_warning:
+            status_text += " (warning: room tier 3 last resort)"
+        self.status_var.set(status_text)
         self._render_patient_grid(profile, live_result)
         self._refresh_profile_preview()
 
