@@ -270,7 +270,7 @@ Recommended first test tonight:
 ### Export Current Schedule View (PNG + PowerPoint)
 
 - In **Manual Scheduler**, use:
-  - **Export View as PNG** to save the currently selected date + active grid mode + program filter as a deterministic rendered PNG.
+  - **Export Schedule as PNG** to save the currently selected date + active grid mode + program filter as a deterministic rendered PNG.
   - **Export as PowerPoint** to export the same layout into a PowerPoint slide with title metadata (`date | view mode | filter`).
 - Export rendering uses the same shared layout model as the on-screen canvas, preserving:
   - merged appointment blocks by duration,
