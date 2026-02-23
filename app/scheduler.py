@@ -312,6 +312,7 @@ class ScheduleEngine:
         backtrack_limit = max(1000, min(int(backtrack_limit), MAX_BACKTRACK_STATES_HARD_CAP))
         request_by_id = {r.id: r for r in requests}
         sorted_ids = sorted([r.id for r in requests], key=lambda rid: len(candidate_map[rid]))
+        fixed_assignments = [a for rid, a in previous_assignments.items() if rid not in request_by_id]
 
         def overlaps(a: Assignment, b: Assignment) -> bool:
             return not (a.end_minute <= b.start_minute or a.start_minute >= b.end_minute)
@@ -329,6 +330,13 @@ class ScheduleEngine:
                     return "patient_conflict"
                 if candidate.room_id == other.room_id and (req.mode == Mode.INDIVIDUAL or other_req.mode == Mode.INDIVIDUAL):
                     return f"room_conflict:{candidate.room_id}"
+            for other in fixed_assignments:
+                if not overlaps(candidate, other):
+                    continue
+                if candidate.provider_id and other.provider_id and candidate.provider_id == other.provider_id:
+                    return f"provider_conflict_fixed:{candidate.provider_id}"
+                if candidate.room_id == other.room_id:
+                    return f"room_conflict_fixed:{candidate.room_id}"
             return None
 
         def soft_score(req_id: str, candidate: Assignment) -> int:

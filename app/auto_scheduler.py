@@ -260,7 +260,7 @@ def _solve_multiday(
         if not daily_requests:
             continue
         weekday = date.fromisoformat(date_key).weekday()
-        daily_previous = {rid: raw for rid, raw in previous_assignments.items() if rid in {r["id"] for r in daily_requests}}
+        daily_previous = {rid: raw for rid, raw in previous_assignments.items() if raw.get("date_key") == date_key}
 
         payload = {
             "date_key": date_key,
@@ -271,7 +271,7 @@ def _solve_multiday(
             "rooms": profile_template["rooms"],
             "requests": daily_requests,
             "previous_assignments": daily_previous,
-            "locked_request_ids": sorted(rid for rid in locked_request_ids if rid in {r["id"] for r in daily_requests}),
+            "locked_request_ids": sorted(rid for rid in locked_request_ids if rid in daily_previous),
             "max_backtrack_states": solver_limits.get("max_backtrack_states"),
             "max_candidates_per_request": solver_limits.get("max_candidates_per_request"),
         }

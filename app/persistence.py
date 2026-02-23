@@ -145,16 +145,22 @@ def save_provider_catalog_entries(entries: List[Dict[str, Any]]) -> Path:
     state["provider_catalog_file"] = str(PROVIDER_CATALOG_PATH)
     save_state(state)
     return PROVIDER_CATALOG_PATH
-def load_requirements_catalog() -> List[Dict[str, Any]]:
+def load_requirements_catalog() -> Dict[str, List[Dict[str, Any]]]:
     payload = _read_json(REQUIREMENTS_CATALOG_PATH)
-    values = payload.get("requirements") if payload else None
-    if not isinstance(values, list):
-        return []
-    return values
+    if not payload:
+        return {"iop_requirements": [], "eval_requirements": []}
+    if isinstance(payload.get("requirements"), list):
+        return {"iop_requirements": payload.get("requirements", []), "eval_requirements": []}
+    iop = payload.get("iop_requirements") if isinstance(payload.get("iop_requirements"), list) else []
+    eval_reqs = payload.get("eval_requirements") if isinstance(payload.get("eval_requirements"), list) else []
+    return {"iop_requirements": iop, "eval_requirements": eval_reqs}
 
 
-def save_requirements_catalog(requirements: List[Dict[str, Any]]) -> Path:
-    _write_json(REQUIREMENTS_CATALOG_PATH, {"requirements": requirements})
+def save_requirements_catalog(requirements: List[Dict[str, Any]], eval_requirements: List[Dict[str, Any]] | None = None) -> Path:
+    payload = {"iop_requirements": requirements}
+    if eval_requirements is not None:
+        payload["eval_requirements"] = eval_requirements
+    _write_json(REQUIREMENTS_CATALOG_PATH, payload)
     state = load_state()
     state["requirements_catalog_file"] = str(REQUIREMENTS_CATALOG_PATH)
     save_state(state)

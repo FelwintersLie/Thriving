@@ -257,8 +257,10 @@ Recommended first test tonight:
   - cohort selection (`Mon-Wed` or `Tue-Thu`),
   - EVAL patient count,
   - day-1 eval group start (`0830` / `0930` / `1000`) and duration (up to 4 hours),
+  - an EVAL requirements builder with add/edit/remove workflow matching IOP (without week selectors).
   - combined generation alongside IOP.
 - IOP requirement duration builder also supports durations up to 4 hours.
+- IOP requirements list includes optional read-only visualization of EVAL requirements via **Show EVAL Requirements** toggle (`[IOP]` blue rows, `[EVAL]` red rows) without persisting duplicates.
 - New **Generate Combined Schedule** mode tries to place IOP and EVAL together while honoring existing soft-locked appointments.
 - New manual-grid controls support:
   - Program filter (`IOP` / `EVAL` / `Both`),

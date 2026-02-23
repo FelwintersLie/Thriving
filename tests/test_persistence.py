@@ -74,11 +74,13 @@ class PersistenceTests(unittest.TestCase):
         profiles = [{"provider_id": "p1", "provider_name": "Provider 1", "discipline": "Speech-Language Pathology"}]
         generated = {"ok": True, "assignments": {"a": {"request_id": "a"}}}
 
-        save_requirements_catalog(reqs)
+        save_requirements_catalog(reqs, [{"id": "e1", "discipline": "Audiology"}])
         save_provider_profiles(profiles)
         save_last_generated_schedule(generated)
 
-        self.assertEqual(load_requirements_catalog(), reqs)
+        loaded_reqs = load_requirements_catalog()
+        self.assertEqual(loaded_reqs.get("iop_requirements"), reqs)
+        self.assertEqual(loaded_reqs.get("eval_requirements")[0]["id"], "e1")
         self.assertEqual(load_provider_profiles().get("providers"), profiles)
         self.assertEqual(load_last_generated_schedule(), generated)
 

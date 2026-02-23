@@ -453,11 +453,17 @@ class SchedulerDesktopApp:
         save_room_rules(self.room_rules, valid_rooms=PREDEFINED_ROOMS)
         self.last_generated_schedule = load_last_generated_schedule()
         self.last_result: Dict[str, Any] | None = None
-        raw_conditions = load_requirements_catalog()
+        requirements_payload = load_requirements_catalog()
         self.auto_conditions: List[Dict[str, Any]] = []
-        for condition in raw_conditions:
+        self.eval_conditions: List[Dict[str, Any]] = []
+        for condition in requirements_payload.get("iop_requirements", []):
             try:
                 self.auto_conditions.append(validate_requirement(condition))
+            except Exception:
+                continue
+        for condition in requirements_payload.get("eval_requirements", []):
+            try:
+                self.eval_conditions.append(validate_requirement(condition))
             except Exception:
                 continue
         self.auto_reconfigure_history: List[List[Dict[str, Any]]] = []
@@ -710,6 +716,8 @@ class SchedulerDesktopApp:
         ttk.Label(cond, text="Provider availability windows are managed in Provider List Management below.", foreground="#495057").grid(row=7, column=0, columnspan=8, sticky="w", pady=(6, 0))
         action_row = ttk.Frame(cond)
         action_row.grid(row=8, column=0, columnspan=8, sticky="w", pady=(8, 0))
+        self.show_eval_requirements_var = self.tk.BooleanVar(value=False)
+        ttk.Checkbutton(action_row, text="Show EVAL Requirements", variable=self.show_eval_requirements_var, command=lambda: self._safe_action(self._refresh_auto_condition_list)).pack(side="left", padx=4)
         ttk.Button(action_row, text="Add Requirement", command=lambda: self._safe_action(self.add_auto_condition)).pack(side="left", padx=4)
         ttk.Button(action_row, text="Edit Selected", command=lambda: self._safe_action(self.edit_selected_condition)).pack(side="left", padx=4)
         ttk.Button(action_row, text="Duplicate Selected", command=lambda: self._safe_action(self.duplicate_selected_condition)).pack(side="left", padx=4)
@@ -725,6 +733,7 @@ class SchedulerDesktopApp:
         self.auto_condition_list.pack(side="left", fill="both", expand=True)
         list_scroll.pack(side="right", fill="y")
         self.auto_condition_list.bind("<<ListboxSelect>>", self._on_requirement_select)
+        self.auto_condition_view_index: List[Tuple[str, int]] = []
 
         output_frame = ttk.Labelframe(parent, text="Generation Status / Bottleneck Report", padding=10)
         output_frame.pack(fill="both", expand=True, padx=6, pady=6)
@@ -742,6 +751,8 @@ class SchedulerDesktopApp:
         self._refresh_auto_condition_list()
     def _build_eval_generator_tab(self, parent) -> None:
         ttk = self.ttk
+        time_choices = military_time_choices()
+        weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
         frame = ttk.Labelframe(parent, text="3-Day EVAL Generator", padding=10)
         frame.pack(fill="x", padx=6, pady=6)
 
@@ -769,6 +780,78 @@ class SchedulerDesktopApp:
         ttk.Combobox(frame, textvariable=self.eval_group_start_var, values=["0830", "0930", "1000"], state="readonly", width=8).grid(row=1, column=5, padx=2)
         ttk.Label(frame, text="Group Duration").grid(row=0, column=6, sticky="w")
         ttk.Combobox(frame, textvariable=self.eval_group_duration_var, values=[str(i) for i in range(30, 241, 15)], state="readonly", width=8).grid(row=1, column=6, padx=2)
+
+        req = ttk.Labelframe(parent, text="EVAL Requirements Builder", padding=10)
+        req.pack(fill="x", padx=6, pady=(0, 6))
+        self.eval_req_id_var = self.tk.StringVar(value=f"eval_req_{len(self.eval_conditions)+1}")
+        self.eval_discipline_var = self.tk.StringVar(value=DISCIPLINES[0])
+        self.eval_provider_var = self.tk.StringVar(value="Any provider")
+        self.eval_room_var = self.tk.StringVar(value="Any compatible room")
+        self.eval_mode_var = self.tk.StringVar(value="individual")
+        self.eval_duration_var = self.tk.StringVar(value="60")
+        self.eval_scope_var = self.tk.StringVar(value="all")
+        self.eval_subset_patients_var = self.tk.StringVar(value="")
+        self.eval_weekday_1_var = self.tk.StringVar(value="Monday")
+        self.eval_weekday_2_var = self.tk.StringVar(value="(none)")
+        self.eval_weekday_3_var = self.tk.StringVar(value="(none)")
+        self.eval_window_start_var = self.tk.StringVar(value="0830")
+        self.eval_window_end_var = self.tk.StringVar(value="1700")
+        self.eval_windows_var = self.tk.StringVar(value="")
+        self.eval_hard_var = self.tk.BooleanVar(value=True)
+        self.eval_priority_var = self.tk.StringVar(value="100")
+
+        provider_values = ["Any provider"] + self.provider_catalog
+        room_values = ["Any compatible room"] + PREDEFINED_ROOMS
+        ttk.Label(req, text="Requirement ID").grid(row=0, column=0, sticky="w")
+        ttk.Entry(req, textvariable=self.eval_req_id_var, width=14).grid(row=1, column=0, padx=2)
+        ttk.Label(req, text="Discipline").grid(row=0, column=1, sticky="w")
+        ttk.Combobox(req, textvariable=self.eval_discipline_var, values=DISCIPLINES, state="readonly", width=20).grid(row=1, column=1, padx=2)
+        ttk.Label(req, text="Provider").grid(row=0, column=2, sticky="w")
+        ttk.Combobox(req, textvariable=self.eval_provider_var, values=provider_values, state="readonly", width=18).grid(row=1, column=2, padx=2)
+        ttk.Label(req, text="Room").grid(row=0, column=3, sticky="w")
+        ttk.Combobox(req, textvariable=self.eval_room_var, values=room_values, state="readonly", width=18).grid(row=1, column=3, padx=2)
+        ttk.Label(req, text="Mode").grid(row=0, column=4, sticky="w")
+        ttk.Combobox(req, textvariable=self.eval_mode_var, values=["individual", "group"], state="readonly", width=10).grid(row=1, column=4, padx=2)
+        ttk.Label(req, text="Duration").grid(row=0, column=5, sticky="w")
+        ttk.Combobox(req, textvariable=self.eval_duration_var, values=[str(i) for i in range(15, 241, 15)], state="readonly", width=8).grid(row=1, column=5, padx=2)
+
+        ttk.Label(req, text="Patient Scope").grid(row=2, column=0, sticky="w", pady=(6, 0))
+        ttk.Combobox(req, textvariable=self.eval_scope_var, values=["all", "single", "subset"], state="readonly", width=12).grid(row=3, column=0, padx=2)
+        ttk.Label(req, text="Subset/Single IDs").grid(row=2, column=1, sticky="w", pady=(6, 0))
+        ttk.Entry(req, textvariable=self.eval_subset_patients_var, width=20).grid(row=3, column=1, padx=2)
+        ttk.Label(req, text="Weekday 1").grid(row=2, column=2, sticky="w", pady=(6, 0))
+        ttk.Combobox(req, textvariable=self.eval_weekday_1_var, values=weekdays, state="readonly", width=12).grid(row=3, column=2, padx=2)
+        ttk.Label(req, text="Weekday 2").grid(row=2, column=3, sticky="w", pady=(6, 0))
+        ttk.Combobox(req, textvariable=self.eval_weekday_2_var, values=["(none)"] + weekdays, state="readonly", width=12).grid(row=3, column=3, padx=2)
+        ttk.Label(req, text="Weekday 3").grid(row=2, column=4, sticky="w", pady=(6, 0))
+        ttk.Combobox(req, textvariable=self.eval_weekday_3_var, values=["(none)"] + weekdays, state="readonly", width=12).grid(row=3, column=4, padx=2)
+
+        ttk.Label(req, text="Window Start").grid(row=4, column=0, sticky="w", pady=(6, 0))
+        ttk.Combobox(req, textvariable=self.eval_window_start_var, values=time_choices, state="readonly", width=10).grid(row=5, column=0, padx=2)
+        ttk.Label(req, text="Window End").grid(row=4, column=1, sticky="w", pady=(6, 0))
+        ttk.Combobox(req, textvariable=self.eval_window_end_var, values=time_choices, state="readonly", width=10).grid(row=5, column=1, padx=2)
+        ttk.Button(req, text="Add Appointment Window", command=lambda: self._safe_action(self.add_eval_requirement_window)).grid(row=5, column=2, padx=4)
+        ttk.Label(req, text="Appointment Windows").grid(row=4, column=3, sticky="w", pady=(6, 0))
+        ttk.Entry(req, textvariable=self.eval_windows_var, width=30).grid(row=5, column=3, columnspan=2, padx=2, sticky="w")
+        ttk.Checkbutton(req, text="Hard constraint", variable=self.eval_hard_var).grid(row=5, column=5, sticky="w")
+        ttk.Combobox(req, textvariable=self.eval_priority_var, values=["25", "50", "75", "100"], state="readonly", width=8).grid(row=5, column=6, padx=2)
+        ttk.Label(req, text="Priority").grid(row=4, column=6, sticky="w", pady=(6, 0))
+
+        eval_row = ttk.Frame(req)
+        eval_row.grid(row=6, column=0, columnspan=7, sticky="w", pady=(8, 0))
+        ttk.Button(eval_row, text="Add Requirement", command=lambda: self._safe_action(self.add_eval_condition)).pack(side="left", padx=4)
+        ttk.Button(eval_row, text="Edit Selected", command=lambda: self._safe_action(self.edit_selected_eval_condition)).pack(side="left", padx=4)
+        ttk.Button(eval_row, text="Remove Selected Requirement", command=lambda: self._safe_action(self.remove_selected_eval_condition)).pack(side="left", padx=4)
+
+        eval_list_frame = ttk.Labelframe(parent, text="EVAL Requirement List", padding=8)
+        eval_list_frame.pack(fill="both", expand=True, padx=6, pady=(0, 6))
+        eval_scroll = ttk.Scrollbar(eval_list_frame, orient=self.tk.VERTICAL)
+        self.eval_condition_list = self.tk.Listbox(eval_list_frame, height=7, yscrollcommand=eval_scroll.set)
+        eval_scroll.config(command=self.eval_condition_list.yview)
+        self.eval_condition_list.pack(side="left", fill="both", expand=True)
+        eval_scroll.pack(side="right", fill="y")
+        self.eval_condition_list.bind("<<ListboxSelect>>", self._on_eval_requirement_select)
+        self._refresh_eval_condition_list()
 
         actions = ttk.Frame(parent)
         actions.pack(fill="x", padx=6, pady=(0, 6))
@@ -1145,6 +1228,9 @@ class SchedulerDesktopApp:
         self.provider_catalog = [p["provider_name"] for p in self.provider_profiles]
         save_provider_catalog_entries(self.provider_profiles)
         save_provider_profiles(self.provider_profiles)
+
+    def _persist_requirements_catalog(self) -> None:
+        save_requirements_catalog(self.auto_conditions, self.eval_conditions)
 
     def _provider_profile_by_name(self, provider_name: str) -> Dict[str, Any] | None:
         key = provider_name.strip().lower()
@@ -2155,6 +2241,22 @@ class SchedulerDesktopApp:
             windows.append({"start_minute": start, "end_minute": end})
         return windows
 
+    def _parse_eval_windows_from_ui(self) -> List[Dict[str, int]]:
+        raw = [w.strip() for w in self.eval_windows_var.get().split(",") if w.strip()]
+        if not raw:
+            raw = [f"{self.eval_window_start_var.get()}-{self.eval_window_end_var.get()}"]
+        windows: List[Dict[str, int]] = []
+        for item in raw:
+            if "-" not in item:
+                raise ValueError(f"Invalid window '{item}'. Use HHMM-HHMM")
+            start_raw, end_raw = [p.strip() for p in item.split("-", 1)]
+            start = parse_time_input(start_raw)
+            end = parse_time_input(end_raw)
+            if end <= start:
+                raise ValueError(f"Invalid window '{item}': end must be after start")
+            windows.append({"start_minute": start, "end_minute": end})
+        return windows
+
     def _selected_weeks(self) -> List[int]:
         weeks: List[int] = []
         if self.auto_week_1_var.get():
@@ -2173,6 +2275,128 @@ class SchedulerDesktopApp:
             if pid not in PATIENT_ID_CHOICES:
                 raise ValueError(f"Patient ID '{pid}' must be in set I1-I30 or E1-E10")
         return raw
+
+    def _selected_eval_weekdays(self) -> List[int]:
+        weekday_map = {"Monday": 0, "Tuesday": 1, "Wednesday": 2, "Thursday": 3, "Friday": 4}
+        picks = [self.eval_weekday_1_var.get(), self.eval_weekday_2_var.get(), self.eval_weekday_3_var.get()]
+        out = [weekday_map[w] for w in picks if w not in ("", "(none)")]
+        if not out:
+            raise ValueError("Select at least one weekday")
+        return sorted(set(out))
+
+    def _selected_eval_scope_ids(self) -> List[str]:
+        raw = [p.strip() for p in self.eval_subset_patients_var.get().split(",") if p.strip()]
+        for pid in raw:
+            if pid not in PATIENT_ID_CHOICES:
+                raise ValueError(f"Patient ID '{pid}' must be in set I1-I30 or E1-E10")
+        return raw
+
+    def add_eval_requirement_window(self) -> None:
+        start_minute = parse_time_input(self.eval_window_start_var.get())
+        end_minute = parse_time_input(self.eval_window_end_var.get())
+        if end_minute <= start_minute:
+            raise ValueError("Window end must be after start")
+        token = f"{self.eval_window_start_var.get()}-{self.eval_window_end_var.get()}"
+        existing = [w.strip() for w in self.eval_windows_var.get().split(",") if w.strip()]
+        if token not in existing:
+            existing.append(token)
+        self.eval_windows_var.set(", ".join(existing))
+
+    def add_eval_condition(self) -> None:
+        provider_choice = self.eval_provider_var.get().strip()
+        room_choice = self.eval_room_var.get().strip()
+        provider_id = "any"
+        if provider_choice not in ("", "Any provider"):
+            profile = self._provider_profile_by_name(provider_choice)
+            provider_id = profile.get("provider_id") if profile else provider_choice
+        condition = {
+            "id": self.eval_req_id_var.get().strip() or f"eval_req_{len(self.eval_conditions)+1}",
+            "discipline": self.eval_discipline_var.get().strip(),
+            "provider_id": provider_id,
+            "provider_ids": [] if provider_id == "any" else [provider_id],
+            "room_id": "any" if room_choice == "Any compatible room" else room_choice,
+            "duration_minutes": int(self.eval_duration_var.get()),
+            "sessions_per_week": 1,
+            "session_mode": self.eval_mode_var.get().strip(),
+            "patient_scope": self.eval_scope_var.get().strip(),
+            "patient_ids": self._selected_eval_scope_ids(),
+            "weekdays": self._selected_eval_weekdays(),
+            "weeks": [1],
+            "time_windows": self._parse_eval_windows_from_ui(),
+            "hard_constraint": bool(self.eval_hard_var.get()),
+            "priority": int(self.eval_priority_var.get()),
+            "source_program": "EVAL",
+        }
+        condition = validate_requirement(condition)
+        if any(c["id"] == condition["id"] for c in self.eval_conditions):
+            raise ValueError(f"Requirement ID '{condition['id']}' already exists")
+        self.eval_conditions.append(condition)
+        self._persist_requirements_catalog()
+        self.eval_req_id_var.set(f"eval_req_{len(self.eval_conditions)+1}")
+        self.eval_windows_var.set("")
+        self._refresh_eval_condition_list()
+        self._refresh_auto_condition_list()
+
+    def _on_eval_requirement_select(self, _event=None) -> None:
+        if not self.eval_condition_list.curselection():
+            return
+        idx = int(self.eval_condition_list.curselection()[0])
+        if idx >= len(self.eval_conditions):
+            return
+        selected = self.eval_conditions[idx]
+        self.eval_req_id_var.set(selected["id"])
+        self.eval_discipline_var.set(selected.get("discipline", self.eval_discipline_var.get()))
+        self.eval_mode_var.set(selected.get("session_mode", self.eval_mode_var.get()))
+        self.eval_duration_var.set(str(selected.get("duration_minutes", self.eval_duration_var.get())))
+
+    def edit_selected_eval_condition(self) -> None:
+        selection = self.eval_condition_list.curselection()
+        if not selection:
+            raise ValueError("Select an EVAL requirement first")
+        idx = int(selection[0])
+        existing = self.eval_conditions[idx]
+        updated = {
+            **existing,
+            "discipline": self.eval_discipline_var.get().strip(),
+            "duration_minutes": int(self.eval_duration_var.get()),
+            "session_mode": self.eval_mode_var.get().strip(),
+            "time_windows": self._parse_eval_windows_from_ui(),
+            "hard_constraint": bool(self.eval_hard_var.get()),
+            "priority": int(self.eval_priority_var.get()),
+            "weekdays": self._selected_eval_weekdays(),
+            "patient_scope": self.eval_scope_var.get().strip(),
+            "patient_ids": self._selected_eval_scope_ids(),
+            "weeks": [1],
+            "source_program": "EVAL",
+        }
+        self.eval_conditions[idx] = validate_requirement(updated)
+        self._persist_requirements_catalog()
+        self._refresh_eval_condition_list()
+        self._refresh_auto_condition_list()
+
+    def remove_selected_eval_condition(self) -> None:
+        selection = self.eval_condition_list.curselection()
+        if not selection:
+            raise ValueError("Select an EVAL requirement first")
+        idx = int(selection[0])
+        self.eval_conditions.pop(idx)
+        self._persist_requirements_catalog()
+        self._refresh_eval_condition_list()
+        self._refresh_auto_condition_list()
+
+    def _refresh_eval_condition_list(self) -> None:
+        if not hasattr(self, "eval_condition_list"):
+            return
+        self.eval_condition_list.delete(0, self.tk.END)
+        if not self.eval_conditions:
+            self.eval_condition_list.insert(self.tk.END, "No EVAL requirements added yet.")
+            return
+        name_map = ["Mon", "Tue", "Wed", "Thu", "Fri"]
+        for idx, c in enumerate(self.eval_conditions, start=1):
+            days = ",".join(name_map[d] for d in c["weekdays"])
+            windows = "; ".join(f"{_to_ampm(w['start_minute'])}-{_to_ampm(w['end_minute'])}" for w in c["time_windows"])
+            line = f"{idx}) [EVAL] {c['id']} | {c['discipline']} | {c['session_mode']} {c['duration_minutes']}m | days={days} | windows={windows}"
+            self.eval_condition_list.insert(self.tk.END, line)
 
     def add_auto_condition(self) -> None:
         weekday_map = {"Monday": 0, "Tuesday": 1, "Wednesday": 2, "Thursday": 3, "Friday": 4}
@@ -2218,6 +2442,7 @@ class SchedulerDesktopApp:
             "time_windows": self._parse_windows_from_ui(),
             "hard_constraint": bool(self.auto_hard_var.get()),
             "priority": int(self.auto_priority_var.get()),
+            "source_program": "IOP",
         }
         condition = validate_requirement(condition)
 
@@ -2225,7 +2450,7 @@ class SchedulerDesktopApp:
             raise ValueError(f"Requirement ID '{condition['id']}' already exists")
 
         self.auto_conditions.append(condition)
-        save_requirements_catalog(self.auto_conditions)
+        self._persist_requirements_catalog()
         self.auto_req_id_var.set(f"req_{len(self.auto_conditions)+1}")
         self.auto_windows_var.set("")
         self._refresh_auto_condition_list()
@@ -2235,9 +2460,13 @@ class SchedulerDesktopApp:
         if not self.auto_condition_list.curselection():
             return
         idx = int(self.auto_condition_list.curselection()[0])
-        if idx >= len(self.auto_conditions):
+        if idx >= len(self.auto_condition_view_index):
             return
-        selected = self.auto_conditions[idx]
+        source, real_idx = self.auto_condition_view_index[idx]
+        if source != "IOP":
+            self.status_var.set("Status: EVAL requirements are read-only in this view")
+            return
+        selected = self.auto_conditions[real_idx]
         self.auto_req_id_var.set(selected["id"])
         self.auto_discipline_var.set(selected.get("discipline", self.auto_discipline_var.get()))
         self.auto_mode_var.set(selected.get("session_mode", self.auto_mode_var.get()))
@@ -2249,10 +2478,12 @@ class SchedulerDesktopApp:
         if not selection:
             raise ValueError("Select a requirement in the list first")
         idx = int(selection[0])
-        if idx >= len(self.auto_conditions):
+        if idx >= len(self.auto_condition_view_index):
             raise ValueError("Selected requirement is out of range")
-
-        existing = self.auto_conditions[idx]
+        source, real_idx = self.auto_condition_view_index[idx]
+        if source != "IOP":
+            raise ValueError("EVAL requirements are read-only in this list")
+        existing = self.auto_conditions[real_idx]
         updated = {
             **existing,
             "discipline": self.auto_discipline_var.get().strip(),
@@ -2263,8 +2494,8 @@ class SchedulerDesktopApp:
             "hard_constraint": bool(self.auto_hard_var.get()),
             "priority": int(self.auto_priority_var.get()),
         }
-        self.auto_conditions[idx] = validate_requirement(updated)
-        save_requirements_catalog(self.auto_conditions)
+        self.auto_conditions[real_idx] = validate_requirement(updated)
+        self._persist_requirements_catalog()
         self._refresh_auto_condition_list()
         self.status_var.set(f"Status: Updated requirement {updated['id']}")
 
@@ -2273,10 +2504,12 @@ class SchedulerDesktopApp:
         if not selection:
             raise ValueError("Select a requirement in the list first")
         idx = int(selection[0])
-        if idx >= len(self.auto_conditions):
+        if idx >= len(self.auto_condition_view_index):
             raise ValueError("Selected requirement is out of range")
-
-        source = dict(self.auto_conditions[idx])
+        source_program, real_idx = self.auto_condition_view_index[idx]
+        if source_program != "IOP":
+            raise ValueError("EVAL requirements are read-only in this list")
+        source = dict(self.auto_conditions[real_idx])
         base = source.get("id", "req") + "_copy"
         existing_ids = {c.get("id") for c in self.auto_conditions}
         new_id = base
@@ -2286,7 +2519,7 @@ class SchedulerDesktopApp:
             n += 1
         source["id"] = new_id
         self.auto_conditions.append(source)
-        save_requirements_catalog(self.auto_conditions)
+        self._persist_requirements_catalog()
         self._refresh_auto_condition_list()
         self.status_var.set(f"Status: Duplicated requirement as {new_id}")
 
@@ -2310,39 +2543,52 @@ class SchedulerDesktopApp:
         if not selection:
             raise ValueError("Select a requirement in the list first")
         idx = int(selection[0])
-        if idx >= len(self.auto_conditions):
+        if idx >= len(self.auto_condition_view_index):
             raise ValueError("Selected requirement is out of range")
-        rid = self.auto_conditions[idx]["id"]
-        self.auto_conditions.pop(idx)
-        save_requirements_catalog(self.auto_conditions)
+        source, real_idx = self.auto_condition_view_index[idx]
+        if source != "IOP":
+            raise ValueError("EVAL requirements are read-only in this list")
+        rid = self.auto_conditions[real_idx]["id"]
+        self.auto_conditions.pop(real_idx)
+        self._persist_requirements_catalog()
         self._refresh_auto_condition_list()
         self.status_var.set(f"Status: Removed requirement {rid}")
 
     def clear_auto_conditions(self) -> None:
         self.auto_conditions = []
-        save_requirements_catalog(self.auto_conditions)
+        self._persist_requirements_catalog()
         self._refresh_auto_condition_list()
         self.status_var.set("Status: Cleared all requirements")
 
     def _refresh_auto_condition_list(self) -> None:
         self.auto_condition_list.delete(0, self.tk.END)
-        if not self.auto_conditions:
+        self.auto_condition_view_index = []
+        if not self.auto_conditions and not (hasattr(self, "show_eval_requirements_var") and self.show_eval_requirements_var.get() and self.eval_conditions):
             self.auto_condition_list.insert(self.tk.END, "No conditions added yet.")
             return
 
         name_map = ["Mon", "Tue", "Wed", "Thu", "Fri"]
-        for idx, c in enumerate(self.auto_conditions, start=1):
+        display_rows: List[Tuple[str, Dict[str, Any], int]] = [("IOP", c, idx) for idx, c in enumerate(self.auto_conditions)]
+        if hasattr(self, "show_eval_requirements_var") and self.show_eval_requirements_var.get():
+            display_rows.extend(("EVAL", c, idx) for idx, c in enumerate(self.eval_conditions))
+
+        for disp_idx, (source_program, c, original_idx) in enumerate(display_rows, start=1):
             days = ",".join(name_map[d] for d in c["weekdays"])
             windows = "; ".join(f"{_to_ampm(w['start_minute'])}-{_to_ampm(w['end_minute'])}" for w in c["time_windows"])
             hard_soft = "hard" if c.get("hard_constraint", True) else "soft"
             provider_keys = c.get("provider_ids") or ([c.get("provider_id", "any")] if c.get("provider_id", "any") != "any" else ["any"])
             providers = [self._provider_display_name(p) if p != "any" else "any" for p in provider_keys]
             line = (
-                f"{idx}) {c['id']} | {c['discipline']} | providers={','.join(providers)} | room={c['room_id']} | "
+                f"{disp_idx}) [{source_program}] {c['id']} | {c['discipline']} | providers={','.join(providers)} | room={c['room_id']} | "
                 f"{c['session_mode']} {c['duration_minutes']}m x{c.get('sessions_per_week',1)}/wk | scope={c['patient_scope']} | days={days} | weeks={c['weeks']} | "
                 f"windows={windows} | {hard_soft} p={c.get('priority', 100)}"
             )
             self.auto_condition_list.insert(self.tk.END, line)
+            self.auto_condition_view_index.append((source_program, original_idx))
+            if source_program == "IOP":
+                self.auto_condition_list.itemconfig(self.auto_condition_list.size() - 1, foreground="#0b2d5c")
+            else:
+                self.auto_condition_list.itemconfig(self.auto_condition_list.size() - 1, foreground="#b00020")
 
     def _solver_limits_from_ui(self) -> Dict[str, int]:
         effort = self.auto_solver_effort_var.get().strip().lower()
@@ -2395,7 +2641,7 @@ class SchedulerDesktopApp:
                     "provider_id": assignment.get("provider_id"),
                     "room_id": assignment.get("room_id"),
                     "program_type": src.get("program_type", default_program_type),
-                    "soft_locked": bool(src.get("soft_locked", False)),
+                    "soft_locked": bool(src.get("soft_locked", True)),
                 }
             )
         profile = {
@@ -2419,7 +2665,9 @@ class SchedulerDesktopApp:
         result = generate_three_week_schedule(
             profile_template=profile_template,
             requirements=self.auto_conditions,
+            previous_assignments=self._existing_assignment_map(),
             solver_limits=self._solver_limits_from_ui(),
+            locked_request_ids=self._soft_locked_request_ids(),
         )
         self._push_manual_undo_snapshot("Generate IOP schedule")
         self._update_after_auto_generation(profile_template, result)
