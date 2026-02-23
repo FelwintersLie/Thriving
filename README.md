@@ -219,11 +219,11 @@ Recommended first test tonight:
 - Use the **Provider Profiles** tab to manage all provider data used by both Manual Scheduler and Auto Generator.
 - Each profile stores:
   - stable `provider_id` + editable `provider_name`,
-  - discipline,
+  - up to 5 disciplines,
   - allowed rooms,
   - weekly availability templates (Mon-Fri, multiple windows/day),
   - date exceptions (`unavailable` or `added` windows).
-- Save/Update edits profiles in place and persists them to `data/provider_catalog.json`.
+- Save/Update edits profiles in place and persists them to both `data/provider_catalog.json` and `data/provider_profiles.json`.
 - Manual Scheduler integration:
   - Add Appointment provider dropdown now pulls from Provider Profiles.
   - Selecting a provider auto-fills discipline (if profile discipline is set) and filters room options to allowed rooms.
@@ -256,8 +256,9 @@ Recommended first test tonight:
 - New **EVAL Generator** tab supports:
   - cohort selection (`Mon-Wed` or `Tue-Thu`),
   - EVAL patient count,
-  - day-1 eval group start (`0830` / `0930` / `1000`) and duration,
+  - day-1 eval group start (`0830` / `0930` / `1000`) and duration (up to 4 hours),
   - combined generation alongside IOP.
+- IOP requirement duration builder also supports durations up to 4 hours.
 - New **Generate Combined Schedule** mode tries to place IOP and EVAL together while honoring existing soft-locked appointments.
 - New manual-grid controls support:
   - Program filter (`IOP` / `EVAL` / `Both`),

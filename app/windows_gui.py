@@ -22,12 +22,14 @@ from app.persistence import (
     load_last_generated_schedule,
     load_last_profile,
     load_provider_catalog_entries,
+    load_provider_profiles,
     load_requirements_catalog,
     load_room_rules,
     save_last_generated_schedule,
     save_last_profile,
     save_last_schedule,
     save_provider_catalog_entries,
+    save_provider_profiles,
     save_requirements_catalog,
     save_room_rules,
 )
@@ -43,66 +45,67 @@ from app.schedule_exports import (
 )
 
 DISCIPLINES = [
-    "Primary Care",
-    "Physical Therapy",
-    "Speech-Language Pathology",
-    "Athletic Trainer",
-    "Dietician",
-    "Neuropsychology",
-    "Psychiatry",
-    "Behavioral Health",
-    "Moral Injury",
-    "Reading Group",
     "Accupuncture",
-    "Equine Therapy",
-    "Pharmacology",
     "Art therapy group",
-    "Sleep group",
-    "Writing group",
-    "Supplements group",
-    "PT/Audiology Group",
+    "Athletic Trainer",
     "Audiology",
-    "Yoga",
+    "Behavioral Health",
+    "Dietician",
+    "Equine Therapy",
     "Evaluation Group",
+    "Moral Injury",
+    "Neuropsychology",
+    "PT/Audiology Group",
+    "Pharmacology",
+    "Physical Therapy",
+    "Primary Care",
+    "Psychiatry",
+    "Reading Group",
+    "Sleep group",
+    "Speech-Language Pathology",
+    "Supplements group",
+    "Writing group",
+    "Yoga",
 ]
 
 PREDEFINED_ROOMS = [
+    "Audiology Room",
+    "Brittany's Office",
+    "Conference Room",
+    "Gym",
+    "Jason's Office",
+    "Lounge",
+    "Off-site",
     "Room 1",
     "Room 2",
-    "Room 3",
-    "Room 4",
-    "Gym",
-    "VNG Room",
-    "Audiology Room",
     "Room 207",
     "Room 208",
-    "Lounge",
-    "Conference Room",
-    "Jason's Office",
-    "Brittany's Office",
+    "Room 3",
+    "Room 4",
     "Suite 1",
     "Suite 2",
     "Suite 3",
-    "Off-site",
+    "VNG Room",
 ]
 
 DEFAULT_PROVIDER_NAMES = [
-    "Daniel Fenton",
-    "Heidi Greata",
-    "Elizabeth Watt",
-    "Dana Lebo",
-    "Shawn Kane",
-    "Evan Vitello",
-    "Robert Kanser",
-    "Wesley Cole",
     "Ali Giacona",
-    "Sarah Teague",
     "Carter Smith",
-    "Michelle Ward",
-    "Lisa Padgett",
     "Christine Flicek",
-    "Equine",
+    "Dana Lebo",
+    "Daniel Fenton",
     "Devon Weist",
+    "Elizabeth Lewis",
+    "Elizabeth Watt",
+    "Equine",
+    "Evan Vitello",
+    "Heidi Greata",
+    "Lisa Padgett",
+    "Michelle Ward",
+    "Robert Kanser",
+    "Sarah Teague",
+    "Shawn Kane",
+    "Wesley Cole",
 ]
 
 DISCIPLINE_COLORS = {
@@ -285,11 +288,16 @@ def build_provider_records_from_profiles(provider_profiles: List[Dict[str, Any]]
                 }
             )
 
-        discipline = str(profile.get("discipline", "")).strip()
-        disciplines = [discipline] if discipline else list(DISCIPLINES)
+        discipline_list = [str(d).strip() for d in (profile.get("disciplines") or []) if str(d).strip()]
+        if not discipline_list:
+            discipline = str(profile.get("discipline", "")).strip()
+            discipline_list = [discipline] if discipline else []
+        disciplines = sorted(dict.fromkeys(discipline_list), key=lambda x: x.split()[0].lower()) if discipline_list else list(DISCIPLINES)
         allowed_rooms = profile.get("allowed_rooms") or ["Any compatible room"]
         if "Any compatible room" in allowed_rooms:
             allowed_rooms = list(PREDEFINED_ROOMS)
+        else:
+            allowed_rooms = sorted(dict.fromkeys([r for r in allowed_rooms if r in PREDEFINED_ROOMS]), key=lambda x: x.split()[0].lower())
 
         records.append(
             {
@@ -423,8 +431,10 @@ class SchedulerDesktopApp:
         self.root.title("Therapy Scheduler - Visual Planner")
         self.root.geometry("1380x900")
 
+        saved_profiles_payload = load_provider_profiles().get("providers", [])
+        provider_seed = saved_profiles_payload if saved_profiles_payload else load_provider_catalog_entries(DEFAULT_PROVIDER_NAMES)
         self.provider_profiles = normalize_provider_catalog(
-            load_provider_catalog_entries(DEFAULT_PROVIDER_NAMES),
+            provider_seed,
             defaults=DEFAULT_PROVIDER_NAMES,
             all_rooms=PREDEFINED_ROOMS,
             disciplines=DISCIPLINES,
@@ -656,7 +666,7 @@ class SchedulerDesktopApp:
         ttk.Combobox(cond, textvariable=self.auto_mode_var, values=["individual", "group"], state="readonly", width=11).grid(row=1, column=6, padx=2)
 
         ttk.Label(cond, text="Duration").grid(row=0, column=7, sticky="w")
-        ttk.Combobox(cond, textvariable=self.auto_duration_var, values=[str(i) for i in range(15, 181, 15)], state="readonly", width=8).grid(row=1, column=7, padx=2)
+        ttk.Combobox(cond, textvariable=self.auto_duration_var, values=[str(i) for i in range(15, 241, 15)], state="readonly", width=8).grid(row=1, column=7, padx=2)
         ttk.Label(cond, text="Sessions / week").grid(row=0, column=8, sticky="w")
         ttk.Combobox(cond, textvariable=self.auto_sessions_per_week_var, values=[str(i) for i in range(1, 6)], state="readonly", width=10).grid(row=1, column=8, padx=2)
 
@@ -742,7 +752,6 @@ class SchedulerDesktopApp:
         self.eval_patient_count_var = self.tk.StringVar(value="3")
         self.eval_group_start_var = self.tk.StringVar(value="0830")
         self.eval_group_duration_var = self.tk.StringVar(value="60")
-        self.eval_art_group_var = self.tk.BooleanVar(value=False)
 
         ttk.Label(frame, text="Cohort Start Year").grid(row=0, column=0, sticky="w")
         ttk.Combobox(frame, textvariable=self.eval_start_year_var, values=self.year_choices if hasattr(self, "year_choices") else [str(datetime.utcnow().year)], state="readonly", width=8).grid(row=1, column=0, padx=2)
@@ -759,8 +768,7 @@ class SchedulerDesktopApp:
         ttk.Label(frame, text="Day-1 Group Start").grid(row=0, column=5, sticky="w")
         ttk.Combobox(frame, textvariable=self.eval_group_start_var, values=["0830", "0930", "1000"], state="readonly", width=8).grid(row=1, column=5, padx=2)
         ttk.Label(frame, text="Group Duration").grid(row=0, column=6, sticky="w")
-        ttk.Combobox(frame, textvariable=self.eval_group_duration_var, values=[str(i) for i in range(30, 181, 15)], state="readonly", width=8).grid(row=1, column=6, padx=2)
-        ttk.Checkbutton(frame, text="Art Therapy as group", variable=self.eval_art_group_var).grid(row=1, column=7, padx=8)
+        ttk.Combobox(frame, textvariable=self.eval_group_duration_var, values=[str(i) for i in range(30, 241, 15)], state="readonly", width=8).grid(row=1, column=6, padx=2)
 
         actions = ttk.Frame(parent)
         actions.pack(fill="x", padx=6, pady=(0, 6))
@@ -807,7 +815,7 @@ class SchedulerDesktopApp:
 
         self.provider_profile_id_var = tk.StringVar(value="")
         self.provider_profile_name_var = tk.StringVar(value="")
-        self.provider_profile_discipline_var = tk.StringVar(value=DISCIPLINES[0])
+        self.provider_profile_disciplines_var = tk.StringVar(value="")
 
         row = 0
         ttk.Label(right, text="Provider ID").grid(row=row, column=0, sticky="w")
@@ -816,8 +824,8 @@ class SchedulerDesktopApp:
         ttk.Label(right, text="Provider Name").grid(row=row, column=0, sticky="w")
         ttk.Entry(right, textvariable=self.provider_profile_name_var, width=30).grid(row=row, column=1, sticky="w", padx=4)
         row += 1
-        ttk.Label(right, text="Discipline").grid(row=row, column=0, sticky="w")
-        ttk.Combobox(right, textvariable=self.provider_profile_discipline_var, values=[""] + DISCIPLINES, state="readonly", width=28).grid(row=row, column=1, sticky="w", padx=4)
+        ttk.Label(right, text="Disciplines (up to 5, comma-separated)").grid(row=row, column=0, sticky="w")
+        ttk.Entry(right, textvariable=self.provider_profile_disciplines_var, width=42).grid(row=row, column=1, sticky="w", padx=4)
         row += 1
 
         ttk.Label(right, text="Allowed Rooms").grid(row=row, column=0, sticky="nw", pady=(6, 0))
@@ -1136,6 +1144,7 @@ class SchedulerDesktopApp:
         )
         self.provider_catalog = [p["provider_name"] for p in self.provider_profiles]
         save_provider_catalog_entries(self.provider_profiles)
+        save_provider_profiles(self.provider_profiles)
 
     def _provider_profile_by_name(self, provider_name: str) -> Dict[str, Any] | None:
         key = provider_name.strip().lower()
@@ -1215,7 +1224,8 @@ class SchedulerDesktopApp:
             return
         self.provider_profile_id_var.set(profile.get("provider_id", ""))
         self.provider_profile_name_var.set(profile.get("provider_name", ""))
-        self.provider_profile_discipline_var.set(profile.get("discipline", ""))
+        disciplines = profile.get("disciplines") or ([] if not profile.get("discipline") else [profile.get("discipline")])
+        self.provider_profile_disciplines_var.set(", ".join([str(d).strip() for d in disciplines if str(d).strip()]))
 
         allowed = set(profile.get("allowed_rooms") or ["Any compatible room"])
         for room_name, var in self.allowed_room_vars.items():
@@ -1268,13 +1278,20 @@ class SchedulerDesktopApp:
         name = self.provider_profile_name_var.get().strip()
         if not name:
             raise ValueError("Provider name is required")
-        discipline = self.provider_profile_discipline_var.get().strip()
-        if discipline and discipline not in DISCIPLINES:
-            raise ValueError("Select a valid discipline")
+        raw_disciplines = [x.strip() for x in self.provider_profile_disciplines_var.get().split(",") if x.strip()]
+        disciplines: List[str] = []
+        for d in raw_disciplines:
+            if d not in DISCIPLINES:
+                raise ValueError(f"Invalid discipline: {d}")
+            if d not in disciplines:
+                disciplines.append(d)
+        if len(disciplines) > 5:
+            raise ValueError("A provider can have up to 5 disciplines")
         return {
             "provider_id": pid,
             "provider_name": name,
-            "discipline": discipline,
+            "discipline": disciplines[0] if disciplines else "",
+            "disciplines": disciplines,
             "allowed_rooms": self._collect_editor_allowed_rooms(),
             "availability_templates": self._selected_provider_profile().get("availability_templates", []) if self._selected_provider_profile() else [],
             "exceptions": self._selected_provider_profile().get("exceptions", []) if self._selected_provider_profile() else [],
@@ -1313,7 +1330,7 @@ class SchedulerDesktopApp:
         self.selected_provider_profile_id = ""
         self.provider_profile_id_var.set(self._next_provider_id())
         self.provider_profile_name_var.set("")
-        self.provider_profile_discipline_var.set("")
+        self.provider_profile_disciplines_var.set("")
         self.allowed_room_vars["Any compatible room"].set(True)
         self._on_allowed_room_toggle()
         self.provider_availability_list.delete(0, self.tk.END)
@@ -2481,19 +2498,6 @@ class SchedulerDesktopApp:
 
     def generate_eval_schedule(self) -> None:
         profile_template = self._build_auto_profile_template()
-        # ensure synthetic no-provider exists for eval group
-        provider_ids = {p.get("id") for p in profile_template.get("providers", [])}
-        if "NO_PROVIDER_EVAL_GROUP" not in provider_ids:
-            profile_template["providers"].append(
-                {
-                    "id": "NO_PROVIDER_EVAL_GROUP",
-                    "name": "EVAL Group (No Provider)",
-                    "disciplines": ["Evaluation Group"],
-                    "templates": [{"weekday": wd, "windows": [{"start_minute": GRID_START_MINUTE, "end_minute": GRID_END_MINUTE}]} for wd in range(5)],
-                    "exceptions": [],
-                    "allowed_rooms": ["Conference Room"],
-                }
-            )
         start = parse_date_parts(self.eval_start_year_var.get(), self.eval_start_month_var.get(), self.eval_start_day_var.get())
         result = generate_eval_schedule(
             profile_template=profile_template,
@@ -2502,7 +2506,6 @@ class SchedulerDesktopApp:
             eval_patient_count=int(self.eval_patient_count_var.get()),
             group_duration_minutes=int(self.eval_group_duration_var.get()),
             group_start_time=parse_time_input(self.eval_group_start_var.get()),
-            art_therapy_group=bool(self.eval_art_group_var.get()),
             previous_assignments=self._existing_assignment_map(),
             solver_limits=self._solver_limits_from_ui(),
             locked_request_ids=self._soft_locked_request_ids(),
@@ -2543,7 +2546,6 @@ class SchedulerDesktopApp:
             eval_patient_count=int(self.eval_patient_count_var.get()),
             group_duration_minutes=int(self.eval_group_duration_var.get()),
             group_start_time=parse_time_input(self.eval_group_start_var.get()),
-            art_therapy_group=bool(self.eval_art_group_var.get()),
             previous_assignments={**existing, **iop_result.get("assignments", {})},
             solver_limits=self._solver_limits_from_ui(),
             locked_request_ids=soft_locked_ids,

@@ -100,8 +100,10 @@ def load_provider_catalog_entries(defaults: List[str]) -> List[Dict[str, Any]]:
                         "provider_id": str(item.get("provider_id") or name),
                         "provider_name": name,
                         "discipline": str(item.get("discipline", "")).strip(),
+                        "disciplines": item.get("disciplines") or [],
                         "availability_templates": item.get("availability_templates") or item.get("templates") or [],
                         "exceptions": item.get("exceptions") or [],
+                        "allowed_rooms": item.get("allowed_rooms") or ["Any compatible room"],
                     }
                 )
             else:
@@ -113,8 +115,10 @@ def load_provider_catalog_entries(defaults: List[str]) -> List[Dict[str, Any]]:
                         "provider_id": name,
                         "provider_name": name,
                         "discipline": "",
+                        "disciplines": [],
                         "availability_templates": [],
                         "exceptions": [],
+                        "allowed_rooms": ["Any compatible room"],
                     }
                 )
 

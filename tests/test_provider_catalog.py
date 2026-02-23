@@ -42,6 +42,39 @@ class ProviderCatalogTests(unittest.TestCase):
         self.assertFalse(provider_is_available(profile, date_key="2026-01-05", weekday=0, start_minute=510, end_minute=525))
         self.assertTrue(provider_is_available(profile, date_key="2026-01-05", weekday=0, start_minute=615, end_minute=630))
 
+    def test_normalize_provider_catalog_supports_multiple_disciplines_up_to_five(self):
+        entries = [
+            {
+                "provider_id": "provider_002",
+                "provider_name": "Multi",
+                "disciplines": [
+                    "Physical Therapy",
+                    "Speech-Language Pathology",
+                    "Primary Care",
+                    "Behavioral Health",
+                    "Psychiatry",
+                    "Audiology",
+                ],
+                "allowed_rooms": ["Room 1"],
+                "availability_templates": [],
+                "exceptions": [],
+            }
+        ]
+        normalized = normalize_provider_catalog(
+            entries,
+            defaults=[],
+            all_rooms=["Room 1", "Room 2"],
+            disciplines=[
+                "Physical Therapy",
+                "Speech-Language Pathology",
+                "Primary Care",
+                "Behavioral Health",
+                "Psychiatry",
+                "Audiology",
+            ],
+        )
+        self.assertEqual(len(normalized[0]["disciplines"]), 5)
+
 
 if __name__ == "__main__":
     unittest.main()

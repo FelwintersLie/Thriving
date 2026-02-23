@@ -103,9 +103,20 @@ def normalize_provider_entry(
         raise ProviderCatalogError("provider_id is required")
 
     discipline = str(entry.get("discipline", "")).strip()
+    raw_disciplines = entry.get("disciplines") if isinstance(entry.get("disciplines"), list) else []
+    disciplines_list = [str(d).strip() for d in raw_disciplines if str(d).strip()]
+    if discipline and discipline not in disciplines_list:
+        disciplines_list.insert(0, discipline)
+    disciplines_list = list(dict.fromkeys(disciplines_list))
+    if len(disciplines_list) > 5:
+        disciplines_list = disciplines_list[:5]
+
     discipline_set = set(disciplines)
     if discipline_set and discipline and discipline not in discipline_set:
         raise ProviderCatalogError(f"Unknown discipline '{discipline}'")
+    for item in disciplines_list:
+        if discipline_set and item not in discipline_set:
+            raise ProviderCatalogError(f"Unknown discipline '{item}'")
 
     room_set = set(all_rooms)
     raw_allowed = entry.get("allowed_rooms", [])
@@ -128,8 +139,9 @@ def normalize_provider_entry(
     return {
         "provider_id": provider_id,
         "provider_name": name,
-        "discipline": discipline,
-        "allowed_rooms": sorted(dict.fromkeys(allowed_rooms)),
+        "discipline": disciplines_list[0] if disciplines_list else discipline,
+        "disciplines": sorted(disciplines_list, key=lambda x: x.split()[0].lower()),
+        "allowed_rooms": sorted(dict.fromkeys(allowed_rooms), key=lambda x: x.split()[0].lower()),
         "availability_templates": templates,
         "exceptions": exceptions,
     }

@@ -33,21 +33,21 @@ WEEKDAY_NAME_TO_INDEX = {
 
 
 DEFAULT_EVAL_TEMPLATE = [
-    {"discipline": "Physical Therapy", "duration_minutes": 75, "count": 1},
-    {"discipline": "Physical Therapy", "duration_minutes": 45, "count": 1},
-    {"discipline": "Speech-Language Pathology", "duration_minutes": 60, "count": 1},
-    {"discipline": "Speech-Language Pathology", "duration_minutes": 45, "count": 1},
+    {"discipline": "Art Therapy", "duration_minutes": 60, "count": 1},
     {"discipline": "Athletic Trainer", "duration_minutes": 60, "count": 1},
     {"discipline": "Audiology", "duration_minutes": 60, "count": 1},
-    {"discipline": "Dietician", "duration_minutes": 45, "count": 1},
-    {"discipline": "Nutrition", "duration_minutes": 45, "count": 1},
-    {"discipline": "Primary Care", "duration_minutes": 60, "count": 1},
-    {"discipline": "Pharmacology", "duration_minutes": 60, "count": 1},
     {"discipline": "Behavioral Health", "duration_minutes": 60, "count": 1},
     {"discipline": "Behavioral Health", "duration_minutes": 90, "count": 1},
-    {"discipline": "Psychiatry", "duration_minutes": 75, "count": 1},
+    {"discipline": "Dietician", "duration_minutes": 45, "count": 1},
     {"discipline": "Neuropsychology", "duration_minutes": 165, "count": 1},
-    {"discipline": "Art Therapy", "duration_minutes": 60, "count": 1},
+    {"discipline": "Nutrition", "duration_minutes": 45, "count": 1},
+    {"discipline": "Pharmacology", "duration_minutes": 60, "count": 1},
+    {"discipline": "Physical Therapy", "duration_minutes": 45, "count": 1},
+    {"discipline": "Physical Therapy", "duration_minutes": 75, "count": 1},
+    {"discipline": "Primary Care", "duration_minutes": 60, "count": 1},
+    {"discipline": "Psychiatry", "duration_minutes": 75, "count": 1},
+    {"discipline": "Speech-Language Pathology", "duration_minutes": 45, "count": 1},
+    {"discipline": "Speech-Language Pathology", "duration_minutes": 60, "count": 1},
 ]
 
 
