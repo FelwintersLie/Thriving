@@ -24,6 +24,7 @@ from app.persistence import (
     load_provider_catalog_entries,
     load_provider_profiles,
     load_requirements_catalog,
+    load_room_discipline_profile,
     load_room_rules,
     save_last_generated_schedule,
     save_last_profile,
@@ -31,6 +32,7 @@ from app.persistence import (
     save_provider_catalog_entries,
     save_provider_profiles,
     save_requirements_catalog,
+    save_room_discipline_profile,
     save_room_rules,
 )
 from app.profile_io import load_profile, save_profile, validate_profile
@@ -470,6 +472,19 @@ class SchedulerDesktopApp:
             )
             bucket.setdefault("allowed_disciplines", list(DISCIPLINES))
             bucket.setdefault("room_preference_tier", ROOM_TIER_DEFAULTS.get(room_name, 0))
+
+        latest_discipline_profile = load_room_discipline_profile(PREDEFINED_ROOMS)
+        if latest_discipline_profile:
+            latest_rooms = latest_discipline_profile.get("rooms", {})
+            for room_name in PREDEFINED_ROOMS:
+                if room_name not in latest_rooms:
+                    continue
+                source = latest_rooms.get(room_name, {})
+                target = self.room_rules.setdefault("rooms", {}).setdefault(room_name, {})
+                if "allowed_disciplines" in source:
+                    target["allowed_disciplines"] = list(source.get("allowed_disciplines") or list(DISCIPLINES))
+                if "room_preference_tier" in source:
+                    target["room_preference_tier"] = int(source.get("room_preference_tier", ROOM_TIER_DEFAULTS.get(room_name, 0)) or 0)
         save_room_rules(self.room_rules, valid_rooms=PREDEFINED_ROOMS)
         self.last_generated_schedule = load_last_generated_schedule()
         self.last_result: Dict[str, Any] | None = None
@@ -1078,6 +1093,7 @@ class SchedulerDesktopApp:
         btns = ttk.Frame(right)
         btns.grid(row=6, column=0, columnspan=2, sticky="w", pady=(8, 0))
         ttk.Button(btns, text="Save/Update", command=lambda: self._safe_action(self.save_room_rules)).pack(side="left", padx=4)
+        ttk.Button(btns, text="Save Discipline Matrix", command=lambda: self._safe_action(self.save_room_discipline_matrix_profile)).pack(side="left", padx=4)
         ttk.Button(btns, text="Revert", command=lambda: self._safe_action(self.revert_room_rules_editor)).pack(side="left", padx=4)
         ttk.Button(btns, text="Clear rules for room", command=lambda: self._safe_action(self.clear_selected_room_rules)).pack(side="left", padx=4)
 
@@ -1790,6 +1806,15 @@ class SchedulerDesktopApp:
             self.last_result = build_live_result_from_profile(self.loaded_profile)
             self._render_patient_grid(self.loaded_profile, self.last_result)
         self.status_var.set("Status: Room availability rules saved")
+
+    def save_room_discipline_matrix_profile(self) -> None:
+        room_name = self._selected_room_name()
+        bucket = self._room_rule_bucket(room_name)
+        bucket["allowed_disciplines"] = [d for d, v in self.room_allowed_discipline_vars.items() if v.get()]
+        bucket["room_preference_tier"] = int(self.room_tier_var.get())
+        save_room_discipline_profile(self.room_rules, valid_rooms=PREDEFINED_ROOMS)
+        save_room_rules(self.room_rules, valid_rooms=PREDEFINED_ROOMS)
+        self.status_var.set("Status: Saved room-discipline matrix profile")
 
     def clear_selected_room_rules(self) -> None:
         room_name = self._selected_room_name()
