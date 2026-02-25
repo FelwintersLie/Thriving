@@ -13,6 +13,7 @@ LAST_PROFILE_PATH = Path("data") / "last_profile.json"
 LAST_SCHEDULE_PATH = Path("data") / "last_schedule.json"
 PROVIDER_CATALOG_PATH = Path("data") / "provider_catalog.json"
 ROOM_RULES_PATH = Path("data") / "room_rules.json"
+ROOM_DISCIPLINE_PROFILE_PATH = Path("data") / "room_discipline_profile.json"
 
 REQUIREMENTS_CATALOG_PATH = Path("data") / "requirements_catalog.json"
 LAST_GENERATED_SCHEDULE_PATH = Path("data") / "last_generated_schedule.json"
@@ -100,8 +101,13 @@ def load_provider_catalog_entries(defaults: List[str]) -> List[Dict[str, Any]]:
                         "provider_id": str(item.get("provider_id") or name),
                         "provider_name": name,
                         "discipline": str(item.get("discipline", "")).strip(),
+                        "disciplines": item.get("disciplines") or [],
                         "availability_templates": item.get("availability_templates") or item.get("templates") or [],
                         "exceptions": item.get("exceptions") or [],
+                        "allowed_rooms": item.get("allowed_rooms") or ["Any compatible room"],
+                        "enforce_lunch_break": bool(item.get("enforce_lunch_break", False)),
+                        "lunch_earliest_start_minute": item.get("lunch_earliest_start_minute", 11 * 60 + 30),
+                        "lunch_latest_start_minute": item.get("lunch_latest_start_minute", 13 * 60),
                     }
                 )
             else:
@@ -113,8 +119,13 @@ def load_provider_catalog_entries(defaults: List[str]) -> List[Dict[str, Any]]:
                         "provider_id": name,
                         "provider_name": name,
                         "discipline": "",
+                        "disciplines": [],
                         "availability_templates": [],
                         "exceptions": [],
+                        "allowed_rooms": ["Any compatible room"],
+                        "enforce_lunch_break": False,
+                        "lunch_earliest_start_minute": 11 * 60 + 30,
+                        "lunch_latest_start_minute": 13 * 60,
                     }
                 )
 
@@ -141,16 +152,22 @@ def save_provider_catalog_entries(entries: List[Dict[str, Any]]) -> Path:
     state["provider_catalog_file"] = str(PROVIDER_CATALOG_PATH)
     save_state(state)
     return PROVIDER_CATALOG_PATH
-def load_requirements_catalog() -> List[Dict[str, Any]]:
+def load_requirements_catalog() -> Dict[str, List[Dict[str, Any]]]:
     payload = _read_json(REQUIREMENTS_CATALOG_PATH)
-    values = payload.get("requirements") if payload else None
-    if not isinstance(values, list):
-        return []
-    return values
+    if not payload:
+        return {"iop_requirements": [], "eval_requirements": []}
+    if isinstance(payload.get("requirements"), list):
+        return {"iop_requirements": payload.get("requirements", []), "eval_requirements": []}
+    iop = payload.get("iop_requirements") if isinstance(payload.get("iop_requirements"), list) else []
+    eval_reqs = payload.get("eval_requirements") if isinstance(payload.get("eval_requirements"), list) else []
+    return {"iop_requirements": iop, "eval_requirements": eval_reqs}
 
 
-def save_requirements_catalog(requirements: List[Dict[str, Any]]) -> Path:
-    _write_json(REQUIREMENTS_CATALOG_PATH, {"requirements": requirements})
+def save_requirements_catalog(requirements: List[Dict[str, Any]], eval_requirements: List[Dict[str, Any]] | None = None) -> Path:
+    payload = {"iop_requirements": requirements}
+    if eval_requirements is not None:
+        payload["eval_requirements"] = eval_requirements
+    _write_json(REQUIREMENTS_CATALOG_PATH, payload)
     state = load_state()
     state["requirements_catalog_file"] = str(REQUIREMENTS_CATALOG_PATH)
     save_state(state)
@@ -186,6 +203,31 @@ def save_last_generated_schedule(schedule: Dict[str, Any]) -> Path:
     return LAST_GENERATED_SCHEDULE_PATH
 
 
+
+
+def load_room_discipline_profile(valid_rooms: List[str]) -> Dict[str, Any] | None:
+    payload = _read_json(ROOM_DISCIPLINE_PROFILE_PATH)
+    rooms = payload.get("rooms") if isinstance(payload, dict) else None
+    if not isinstance(rooms, dict):
+        return None
+    normalized = normalize_room_rules({"rooms": rooms}, valid_rooms=valid_rooms)
+    return normalized
+
+
+def save_room_discipline_profile(rules: Dict[str, Any], *, valid_rooms: List[str]) -> Path:
+    normalized = normalize_room_rules(rules, valid_rooms=valid_rooms)
+    room_payload: Dict[str, Any] = {"rooms": {}}
+    for room_name in valid_rooms:
+        room = normalized.get("rooms", {}).get(room_name, {})
+        room_payload["rooms"][room_name] = {
+            "allowed_disciplines": list(room.get("allowed_disciplines") or []),
+            "room_preference_tier": int(room.get("room_preference_tier", 0) or 0),
+        }
+    _write_json(ROOM_DISCIPLINE_PROFILE_PATH, room_payload)
+    state = load_state()
+    state["room_discipline_profile_file"] = str(ROOM_DISCIPLINE_PROFILE_PATH)
+    save_state(state)
+    return ROOM_DISCIPLINE_PROFILE_PATH
 def load_room_rules(valid_rooms: List[str]) -> Dict[str, Any]:
     payload = _read_json(ROOM_RULES_PATH)
     normalized = normalize_room_rules(payload, valid_rooms=valid_rooms)

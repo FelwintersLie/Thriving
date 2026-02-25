@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Dict, List, Optional, Sequence, Tuple
 
 SLOT_MINUTES = 15
 
-MAX_REQUESTS = 48
+MAX_REQUESTS = 240
 MAX_PROVIDERS = 64
 MAX_PATIENTS = 256
 MAX_ROOMS = 64
@@ -53,9 +54,14 @@ class Provider:
     templates: List[ProviderTemplate] = field(default_factory=list)
     exceptions: List[ProviderException] = field(default_factory=list)
     allowed_rooms: set[str] = field(default_factory=set)
+    enforce_lunch_break: bool = False
+    lunch_earliest_start_minute: int = 11 * 60 + 30
+    lunch_latest_start_minute: int = 13 * 60
 
     def is_available(self, date_key: str, weekday: int, start: int, end: int) -> bool:
         in_template = any(w.contains(start, end) for t in self.templates if t.weekday == weekday for w in t.windows)
+        if not in_template and not self.templates and not self.exceptions:
+            in_template = True
         if not in_template:
             return False
 
@@ -90,6 +96,7 @@ class Room:
     unavailable_dates: Dict[str, List[TimeWindow]] = field(default_factory=dict)
     available_only_weekly: Dict[int, List[TimeWindow]] = field(default_factory=dict)
     available_only_dates: Dict[str, List[TimeWindow]] = field(default_factory=dict)
+    room_preference_tier: int = 0
 
     def is_available(self, date_key: str, weekday: int, start: int, end: int) -> bool:
         for window in self.unavailable_weekly.get(weekday, []):
@@ -131,7 +138,7 @@ class SessionRequest:
 @dataclass(frozen=True)
 class Assignment:
     request_id: str
-    provider_id: str
+    provider_id: Optional[str]
     room_id: str
     start_minute: int
     end_minute: int
@@ -145,8 +152,12 @@ class UnschedulableError(RuntimeError):
 
 class ScheduleEngine:
     """
-    Backtracking + scoring scheduler tuned for small daily census (<= 6 patients).
+    Constraint-based scheduler with composable hard/soft rules and diagnostic logging.
     """
+
+    def __init__(self) -> None:
+        self.logger = logging.getLogger("app.scheduler")
+        self.last_diagnostics: List[str] = []
 
     def generate_schedule(
         self,
@@ -165,21 +176,59 @@ class ScheduleEngine:
     ) -> Dict[str, Assignment]:
         previous_assignments = previous_assignments or {}
         locked_request_ids = locked_request_ids or set()
-        backtrack_limit = max_backtrack_states or MAX_BACKTRACK_STATES
         candidate_limit = max_candidates_per_request or MAX_CANDIDATES_PER_REQUEST
-        backtrack_limit = max(1000, min(int(backtrack_limit), MAX_BACKTRACK_STATES_HARD_CAP))
         candidate_limit = max(100, min(int(candidate_limit), MAX_CANDIDATES_PER_REQUEST_HARD_CAP))
+        self.last_diagnostics = []
 
         self._validate_input_sizes(requests=requests, providers=providers, patients=patients, rooms=rooms, day_window=day_window)
 
         patient_by_id = {p.id: p for p in patients}
         request_by_id = {r.id: r for r in requests}
-
         if len(patient_by_id) != len(patients):
             raise ValueError("Duplicate patient IDs detected")
         if len(request_by_id) != len(requests):
             raise ValueError("Duplicate request IDs detected")
 
+        candidate_map = self._build_candidate_map(
+            date_key=date_key,
+            weekday=weekday,
+            requests=requests,
+            providers=providers,
+            patients=patients,
+            rooms=rooms,
+            day_window=day_window,
+            previous_assignments=previous_assignments,
+            locked_request_ids=locked_request_ids,
+            candidate_limit=candidate_limit,
+        )
+        solution = self._solve_with_constraints(
+            requests=requests,
+            candidate_map=candidate_map,
+            previous_assignments=previous_assignments,
+            max_backtrack_states=max_backtrack_states,
+            rooms=rooms,
+            providers=providers,
+            date_key=date_key,
+            weekday=weekday,
+            day_window=day_window,
+        )
+        return solution
+
+    def _build_candidate_map(
+        self,
+        *,
+        date_key: str,
+        weekday: int,
+        requests: Sequence[SessionRequest],
+        providers: Sequence[Provider],
+        patients: Sequence[Patient],
+        rooms: Sequence[Room],
+        day_window: TimeWindow,
+        previous_assignments: Dict[str, Assignment],
+        locked_request_ids: set[str],
+        candidate_limit: int,
+    ) -> Dict[str, List[Assignment]]:
+        patient_by_id = {p.id: p for p in patients}
         candidates: Dict[str, List[Assignment]] = {}
 
         for req in requests:
@@ -189,27 +238,36 @@ class ScheduleEngine:
                 raise ValueError(f"Request {req.id} duration must be multiple of 15")
 
             if req.id in locked_request_ids and req.id in previous_assignments:
-                locked = previous_assignments[req.id]
-                candidates[req.id] = [locked]
+                candidates[req.id] = [previous_assignments[req.id]]
+                self._log_decision(f"Request {req.id} locked to previous assignment")
                 continue
 
+            rejection_counts = {
+                "provider_discipline": 0,
+                "provider_specific": 0,
+                "room_discipline": 0,
+                "room_rules": 0,
+                "patient": 0,
+                "provider": 0,
+            }
             options: List[Assignment] = []
-            rejection_counts = {"provider_discipline": 0, "provider_specific": 0, "room_discipline": 0, "room_rules": 0, "patient": 0, "provider": 0}
-            for provider in providers:
-                if req.discipline not in provider.disciplines:
-                    rejection_counts["provider_discipline"] += 1
-                    continue
-                if req.provider_id and provider.id != req.provider_id:
-                    rejection_counts["provider_specific"] += 1
-                    continue
-                if req.provider_ids and provider.id not in req.provider_ids:
-                    rejection_counts["provider_specific"] += 1
-                    continue
+            provider_pool: List[Optional[Provider]] = [None] if req.provider_id == "NO_PROVIDER" else list(providers)
+            for provider in provider_pool:
+                if provider is not None:
+                    if req.discipline not in provider.disciplines:
+                        rejection_counts["provider_discipline"] += 1
+                        continue
+                    if req.provider_id and provider.id != req.provider_id:
+                        rejection_counts["provider_specific"] += 1
+                        continue
+                    if req.provider_ids and provider.id not in req.provider_ids:
+                        rejection_counts["provider_specific"] += 1
+                        continue
 
                 for room in rooms:
                     if req.room_id and room.id != req.room_id:
                         continue
-                    if provider.allowed_rooms and room.id not in provider.allowed_rooms:
+                    if provider is not None and provider.allowed_rooms and room.id not in provider.allowed_rooms:
                         continue
                     if req.discipline not in room.allowed_disciplines:
                         rejection_counts["room_discipline"] += 1
@@ -221,7 +279,7 @@ class ScheduleEngine:
                         end = start + req.duration_minutes
                         if end > day_window.end_minute:
                             break
-                        if not provider.is_available(date_key, weekday, start, end):
+                        if provider is not None and not provider.is_available(date_key, weekday, start, end):
                             rejection_counts["provider"] += 1
                             continue
                         if not room.is_available(date_key, weekday, start, end):
@@ -230,16 +288,14 @@ class ScheduleEngine:
                         if not all(patient_by_id[p].is_available(date_key, start, end) for p in req.patient_ids):
                             rejection_counts["patient"] += 1
                             continue
-
-                        label = req.label or f"{req.discipline.title()} {'Group' if req.mode == Mode.GROUP else 'Individual'}"
                         options.append(
                             Assignment(
                                 request_id=req.id,
-                                provider_id=provider.id,
+                                provider_id=provider.id if provider is not None else None,
                                 room_id=room.id,
                                 start_minute=start,
                                 end_minute=end,
-                                label=label,
+                                label=req.label or f"{req.discipline.title()} {'Group' if req.mode == Mode.GROUP else 'Individual'}",
                                 mode=req.mode,
                             )
                         )
@@ -247,89 +303,143 @@ class ScheduleEngine:
                             raise UnschedulableError(
                                 f"Request {req.id} has too many options ({len(options)}). Narrow time windows or reduce resources."
                             )
-
             if not options:
                 reason = ", ".join(f"{k}={v}" for k, v in rejection_counts.items() if v > 0)
-                msg = f"No feasible options for request {req.id}"
-                if reason:
-                    msg += f" ({reason})"
-                raise UnschedulableError(msg)
+                self._log_constraint_failure(req.id, reason or "no feasible candidates")
+                raise UnschedulableError(f"No feasible options for request {req.id}{f' ({reason})' if reason else ''}")
             candidates[req.id] = options
+            self._log_decision(f"Request {req.id} generated {len(options)} candidates")
+        return candidates
 
-        sorted_requests = sorted(requests, key=lambda r: len(candidates[r.id]))
-
-        best_solution: Optional[Dict[str, Assignment]] = None
-        best_score: Optional[Tuple[int, int]] = None
-        states_visited = 0
+    def _solve_with_constraints(
+        self,
+        *,
+        requests: Sequence[SessionRequest],
+        candidate_map: Dict[str, List[Assignment]],
+        previous_assignments: Dict[str, Assignment],
+        max_backtrack_states: Optional[int],
+        rooms: Sequence[Room],
+        providers: Sequence[Provider],
+        date_key: str,
+        weekday: int,
+        day_window: TimeWindow,
+    ) -> Dict[str, Assignment]:
+        backtrack_limit = max_backtrack_states or MAX_BACKTRACK_STATES
+        backtrack_limit = max(1000, min(int(backtrack_limit), MAX_BACKTRACK_STATES_HARD_CAP))
+        request_by_id = {r.id: r for r in requests}
+        sorted_ids = sorted([r.id for r in requests], key=lambda rid: len(candidate_map[rid]))
+        fixed_assignments = [a for rid, a in previous_assignments.items() if rid not in request_by_id]
+        room_by_id = {room.id: room for room in rooms}
 
         def overlaps(a: Assignment, b: Assignment) -> bool:
             return not (a.end_minute <= b.start_minute or a.start_minute >= b.end_minute)
 
-        def conflicts_with_assigned(a: Assignment, assigned: Dict[str, Assignment]) -> bool:
-            req = request_by_id[a.request_id]
+        def hard_conflict(req_id: str, candidate: Assignment, assigned: Dict[str, Assignment]) -> Optional[str]:
+            req = request_by_id[req_id]
             req_patients = set(req.patient_ids)
-            for other_req_id, other in assigned.items():
-                other_req = request_by_id[other_req_id]
-                if not overlaps(a, other):
+            for other_id, other in assigned.items():
+                other_req = request_by_id[other_id]
+                if not overlaps(candidate, other):
                     continue
-                if a.provider_id == other.provider_id:
-                    return True
+                if candidate.provider_id and other.provider_id and candidate.provider_id == other.provider_id:
+                    return f"provider_conflict:{candidate.provider_id}"
                 if req_patients.intersection(other_req.patient_ids):
-                    return True
-                if a.room_id == other.room_id:
+                    return "patient_conflict"
+                if candidate.room_id == other.room_id and (req.mode == Mode.INDIVIDUAL or other_req.mode == Mode.INDIVIDUAL):
+                    return f"room_conflict:{candidate.room_id}"
+            for other in fixed_assignments:
+                if not overlaps(candidate, other):
+                    continue
+                if candidate.provider_id and other.provider_id and candidate.provider_id == other.provider_id:
+                    return f"provider_conflict_fixed:{candidate.provider_id}"
+                if candidate.room_id == other.room_id:
+                    return f"room_conflict_fixed:{candidate.room_id}"
+            return None
+
+        def soft_score(req_id: str, candidate: Assignment) -> int:
+            req = request_by_id[req_id]
+            penalty = 0
+            previous = previous_assignments.get(req_id)
+            if previous and previous != candidate:
+                penalty += 10
+            if req.preferred_window and not req.preferred_window.contains(candidate.start_minute, candidate.end_minute):
+                penalty += 3
+            room_tier = room_by_id.get(candidate.room_id).room_preference_tier if candidate.room_id in room_by_id else 0
+            penalty += max(0, int(room_tier))
+            return penalty
+
+        best: Optional[Dict[str, Assignment]] = None
+        best_score: Optional[int] = None
+        states = 0
+        conflict_logs = 0
+
+        provider_by_id = {p.id: p for p in providers}
+
+        def _has_lunch_slot(provider: Provider, solution: Dict[str, Assignment]) -> bool:
+            if not provider.enforce_lunch_break:
+                return True
+            start_bound = max(day_window.start_minute, int(provider.lunch_earliest_start_minute))
+            end_bound = min(day_window.end_minute - 30, int(provider.lunch_latest_start_minute))
+            if end_bound < start_bound:
+                return True
+            provider_assignments = [a for a in list(solution.values()) + fixed_assignments if a.provider_id == provider.id]
+            for start in range(start_bound, end_bound + 1, SLOT_MINUTES):
+                end = start + 30
+                if not provider.is_available(date_key, weekday, start, end):
+                    continue
+                occupied = any(not (end <= a.start_minute or start >= a.end_minute) for a in provider_assignments)
+                if not occupied:
                     return True
             return False
 
-        def score(solution: Dict[str, Assignment]) -> Tuple[int, int]:
-            # Lower is better. Score[0] stabilizes previous schedule.
-            changes = 0
-            preference_penalty = 0
-            for req in requests:
-                new = solution[req.id]
-                old = previous_assignments.get(req.id)
-                if old and old != new:
-                    changes += 1
-
-                if req.preferred_window and not req.preferred_window.contains(new.start_minute, new.end_minute):
-                    preference_penalty += 1
-            return (changes, preference_penalty)
-
-        def backtrack(index: int, assigned: Dict[str, Assignment]) -> None:
-            nonlocal best_solution, best_score, states_visited
-            states_visited += 1
-            if states_visited > backtrack_limit:
-                raise UnschedulableError(
-                    "Search limit reached while scheduling. Narrow windows, schedule fewer sessions, or increase solver effort."
-                )
-            if index == len(sorted_requests):
-                current_score = score(assigned)
-                if best_score is None or current_score < best_score:
-                    best_score = current_score
-                    best_solution = dict(assigned)
+        def dfs(index: int, assigned: Dict[str, Assignment], running_penalty: int) -> None:
+            nonlocal best, best_score, states, conflict_logs
+            states += 1
+            if states > backtrack_limit:
+                raise UnschedulableError("Search limit reached while scheduling. Narrow windows or increase solver effort.")
+            if index == len(sorted_ids):
+                for provider in provider_by_id.values():
+                    if not _has_lunch_slot(provider, assigned):
+                        self._log_constraint_failure("lunch", f"provider {provider.id} has no 30-min lunch slot")
+                        return
+                if best_score is None or running_penalty < best_score:
+                    best = dict(assigned)
+                    best_score = running_penalty
+                    self._log_decision(f"New best solution penalty={running_penalty} states={states}")
                 return
 
-            req = sorted_requests[index]
-            options = sorted(
-                candidates[req.id],
-                key=lambda a: (
-                    0 if previous_assignments.get(req.id) == a else 1,
-                    abs((req.preferred_window.start_minute if req.preferred_window else a.start_minute) - a.start_minute),
-                ),
-            )
-
+            rid = sorted_ids[index]
+            options = sorted(candidate_map[rid], key=lambda c: soft_score(rid, c))
             for option in options:
-                if conflicts_with_assigned(option, assigned):
+                reason = hard_conflict(rid, option, assigned)
+                if reason:
+                    if conflict_logs < 120:
+                        self._log_constraint_failure(rid, reason)
+                        conflict_logs += 1
                     continue
-                assigned[req.id] = option
-                backtrack(index + 1, assigned)
-                del assigned[req.id]
+                next_penalty = running_penalty + soft_score(rid, option)
+                if best_score is not None and next_penalty >= best_score:
+                    continue
+                assigned[rid] = option
+                self._log_decision(f"Assign {rid} -> {option.room_id}@{option.start_minute} provider={option.provider_id}")
+                dfs(index + 1, assigned, next_penalty)
+                del assigned[rid]
 
-        backtrack(0, {})
+        dfs(0, {}, 0)
+        self._log_decision(f"Backtracking attempts={states}")
+        if best is None:
+            raise UnschedulableError("No full solution found for the day; all candidate combinations violate hard constraints.")
+        return best
 
-        if not best_solution:
-            raise UnschedulableError("No full solution found for the day")
+    def _log_constraint_failure(self, request_id: str, reason: str) -> None:
+        message = f"constraint_failure request={request_id} reason={reason}"
+        self.last_diagnostics.append(message)
+        self.logger.debug(message)
 
-        return best_solution
+    def _log_decision(self, message: str) -> None:
+        tagged = f"decision {message}"
+        self.last_diagnostics.append(tagged)
+        self.logger.debug(tagged)
 
     def _validate_input_sizes(
         self,

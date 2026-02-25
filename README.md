@@ -208,6 +208,9 @@ Recommended first test tonight:
 - Auto Generator now has two linked builders:
   - **Section A: Appointment Requirements** (required sessions/frequency/windows/priority),
   - **Section B: Provider Availability Rules** (weekly availability templates by provider + live Mon-Fri preview grid).
+
+- Unified scheduling now supports both program types in one appointment model (`program_type`, `appointment_id`, `soft_locked`) with IOP + EVAL combined generation and move reporting.
+- EVAL day-1 intake group can be scheduled as a room-only session (no provider resource), and Conference Room Monday/Tuesday 08:30-11:00 reservation can be enforced via room rules defaults.
 - Requirement rows now support add/edit/duplicate/remove and include **sessions per week**.
 - Provider availability rules now persist in the provider catalog schema so updates are reused by the generator immediately.
 
@@ -216,15 +219,17 @@ Recommended first test tonight:
 - Use the **Provider Profiles** tab to manage all provider data used by both Manual Scheduler and Auto Generator.
 - Each profile stores:
   - stable `provider_id` + editable `provider_name`,
-  - discipline,
+  - up to 5 disciplines,
   - allowed rooms,
   - weekly availability templates (Mon-Fri, multiple windows/day),
-  - date exceptions (`unavailable` or `added` windows).
-- Save/Update edits profiles in place and persists them to `data/provider_catalog.json`.
+  - date exceptions (`unavailable` or `added` windows),
+  - optional lunch policy (enforced 30-min lunch with earliest/latest lunch start range).
+- Save/Update edits profiles in place and persists them to both `data/provider_catalog.json` and `data/provider_profiles.json`.
 - Manual Scheduler integration:
   - Add Appointment provider dropdown now pulls from Provider Profiles.
   - Selecting a provider auto-fills discipline (if profile discipline is set) and filters room options to allowed rooms.
   - Appointment add validates provider availability using selected date + weekly template + exceptions.
+  - If a provider has no templates and no exceptions, they default to all-day availability within planning day bounds.
 - Auto Generator integration:
   - Requirement provider dropdowns pull from Provider Profiles.
   - `Any provider` + discipline only selects providers with matching profile discipline.
@@ -242,6 +247,8 @@ Recommended first test tonight:
 - Saved in `data/room_rules.json` and applied immediately.
 - Manual Scheduler blocks Add Appointment when selected room violates room rules.
 - Auto-generator treats room rules as hard constraints and includes room-rule rejection counts in infeasibility details.
+- Room Rules also support discipline compatibility per room and room preference tiers (`0..3`) used as soft room penalties in auto-generation.
+- Core day scheduler now uses a constraint-based optimization/backtracking engine with composable hard constraints (room/provider/patient/resource) and soft scoring (stability/preferences), plus diagnostics logs for constraint failures and scheduling decisions.
 
 
 ### IOP + EVAL Integrated Scheduling
@@ -252,8 +259,11 @@ Recommended first test tonight:
 - New **EVAL Generator** tab supports:
   - cohort selection (`Mon-Wed` or `Tue-Thu`),
   - EVAL patient count,
-  - day-1 eval group start (`0830` / `0930` / `1000`) and duration,
+  - day-1 eval group start (`0830` / `0930` / `1000`) and duration (up to 4 hours),
+  - an EVAL requirements builder with add/edit/remove workflow matching IOP (without week selectors).
   - combined generation alongside IOP.
+- IOP requirement duration builder also supports durations up to 4 hours.
+- IOP requirements list includes optional read-only visualization of EVAL requirements via **Show EVAL Requirements** toggle (`[IOP]` blue rows, `[EVAL]` red rows) without persisting duplicates.
 - New **Generate Combined Schedule** mode tries to place IOP and EVAL together while honoring existing soft-locked appointments.
 - New manual-grid controls support:
   - Program filter (`IOP` / `EVAL` / `Both`),
@@ -263,8 +273,8 @@ Recommended first test tonight:
 ### Export Current Schedule View (PNG + PowerPoint)
 
 - In **Manual Scheduler**, use:
-  - **Export PNG (Current View)** to save the currently selected date + active grid mode + program filter as a deterministic rendered PNG.
-  - **Export PPTX (Current Date)** to export the same layout into a PowerPoint slide with title metadata (`date | view mode | filter`).
+  - **Export Schedule as PNG** to save the currently selected date + active grid mode + program filter as a deterministic rendered PNG.
+  - **Export as PowerPoint** to export the same layout into a PowerPoint slide with title metadata (`date | view mode | filter`).
 - Export rendering uses the same shared layout model as the on-screen canvas, preserving:
   - merged appointment blocks by duration,
   - time/header geometry and column layout,
@@ -274,4 +284,3 @@ Recommended first test tonight:
 - Dependency notes (if not already installed):
   - `python3 -m pip install Pillow` for PNG export
   - `python3 -m pip install python-pptx` for PPTX export
-

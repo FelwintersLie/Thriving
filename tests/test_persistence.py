@@ -8,6 +8,7 @@ from app.persistence import (
     LAST_GENERATED_SCHEDULE_PATH,
     PROVIDER_PROFILES_PATH,
     ROOM_RULES_PATH,
+    ROOM_DISCIPLINE_PROFILE_PATH,
     REQUIREMENTS_CATALOG_PATH,
     STATE_PATH,
     load_last_generated_schedule,
@@ -26,12 +27,14 @@ from app.persistence import (
     save_provider_catalog,
     load_room_rules,
     save_room_rules,
+    load_room_discipline_profile,
+    save_room_discipline_profile,
 )
 
 
 class PersistenceTests(unittest.TestCase):
     def tearDown(self):
-        for path in [STATE_PATH, LAST_PROFILE_PATH, LAST_SCHEDULE_PATH, PROVIDER_CATALOG_PATH, REQUIREMENTS_CATALOG_PATH, PROVIDER_PROFILES_PATH, LAST_GENERATED_SCHEDULE_PATH, ROOM_RULES_PATH]:
+        for path in [STATE_PATH, LAST_PROFILE_PATH, LAST_SCHEDULE_PATH, PROVIDER_CATALOG_PATH, REQUIREMENTS_CATALOG_PATH, PROVIDER_PROFILES_PATH, LAST_GENERATED_SCHEDULE_PATH, ROOM_RULES_PATH, ROOM_DISCIPLINE_PROFILE_PATH]:
             if path.exists():
                 path.unlink()
         data_dir = Path("data")
@@ -74,11 +77,13 @@ class PersistenceTests(unittest.TestCase):
         profiles = [{"provider_id": "p1", "provider_name": "Provider 1", "discipline": "Speech-Language Pathology"}]
         generated = {"ok": True, "assignments": {"a": {"request_id": "a"}}}
 
-        save_requirements_catalog(reqs)
+        save_requirements_catalog(reqs, [{"id": "e1", "discipline": "Audiology"}])
         save_provider_profiles(profiles)
         save_last_generated_schedule(generated)
 
-        self.assertEqual(load_requirements_catalog(), reqs)
+        loaded_reqs = load_requirements_catalog()
+        self.assertEqual(loaded_reqs.get("iop_requirements"), reqs)
+        self.assertEqual(loaded_reqs.get("eval_requirements")[0]["id"], "e1")
         self.assertEqual(load_provider_profiles().get("providers"), profiles)
         self.assertEqual(load_last_generated_schedule(), generated)
 
@@ -113,6 +118,20 @@ class PersistenceTests(unittest.TestCase):
         loaded = load_room_rules(["Room 1", "Room 2"])
         self.assertIn("Room 1", loaded["rooms"])
         self.assertEqual(loaded["rooms"]["Room 1"]["unavailable_weekly"][0][0]["start_minute"], 660)
+
+
+    def test_room_discipline_profile_roundtrip(self):
+        rules = {
+            "rooms": {
+                "Room 1": {"allowed_disciplines": ["Physical Therapy"], "room_preference_tier": 2},
+                "Room 2": {"allowed_disciplines": ["Audiology"], "room_preference_tier": 1},
+            }
+        }
+        save_room_discipline_profile(rules, valid_rooms=["Room 1", "Room 2"])
+        loaded = load_room_discipline_profile(["Room 1", "Room 2"])
+        self.assertIsNotNone(loaded)
+        self.assertEqual(loaded["rooms"]["Room 1"]["allowed_disciplines"], ["Physical Therapy"])
+        self.assertEqual(loaded["rooms"]["Room 2"]["room_preference_tier"], 1)
 
 
 if __name__ == "__main__":
