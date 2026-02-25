@@ -185,6 +185,35 @@ class AutoSchedulerTests(unittest.TestCase):
         self.assertEqual(req["room_id"], "any")
         self.assertEqual(req["sessions_per_week"], 1)
 
+    def test_generate_three_week_schedule_respects_provider_exceptions(self):
+        template = self._template()
+        template["providers"][0]["exceptions"] = [
+            {
+                "date_key": "2026-01-05",
+                "window": {"start_minute": 480, "end_minute": 900},
+                "available_override": False,
+            }
+        ]
+        requirements = [
+            {
+                "id": "slp_blocked",
+                "discipline": "Speech-Language Pathology",
+                "provider_id": "Daniel Fenton",
+                "room_id": "Room 1",
+                "duration_minutes": 60,
+                "session_mode": "individual",
+                "patient_scope": "single",
+                "patient_ids": ["1"],
+                "weekdays": [0],
+                "weeks": [1],
+                "time_windows": [{"start_minute": 480, "end_minute": 840}],
+                "hard_constraint": True,
+                "priority": 100,
+            }
+        ]
+        result = generate_three_week_schedule(profile_template=template, requirements=requirements)
+        self.assertFalse(result["ok"])
+
 
 
 if __name__ == "__main__":

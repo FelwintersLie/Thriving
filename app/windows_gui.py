@@ -22,18 +22,22 @@ from app.persistence import (
     load_last_generated_schedule,
     load_last_profile,
     load_provider_catalog_entries,
+    load_provider_profiles,
     load_requirements_catalog,
+    load_room_discipline_profile,
     load_room_rules,
     save_last_generated_schedule,
     save_last_profile,
     save_last_schedule,
     save_provider_catalog_entries,
+    save_provider_profiles,
     save_requirements_catalog,
+    save_room_discipline_profile,
     save_room_rules,
 )
 from app.profile_io import load_profile, save_profile, validate_profile
 from app.provider_catalog import normalize_provider_catalog, provider_is_available
-from app.room_rules import room_is_available
+from app.room_rules import is_room_discipline_compatible, room_is_available, room_preference_tier
 from app.windows_program import save_json
 from app.schedule_exports import (
     build_schedule_layout_model,
@@ -43,67 +47,77 @@ from app.schedule_exports import (
 )
 
 DISCIPLINES = [
-    "Primary Care",
-    "Physical Therapy",
-    "Speech-Language Pathology",
-    "Athletic Trainer",
-    "Dietician",
-    "Neuropsychology",
-    "Psychiatry",
-    "Behavioral Health",
-    "Moral Injury",
-    "Reading Group",
     "Accupuncture",
-    "Equine Therapy",
-    "Pharmacology",
     "Art therapy group",
-    "Sleep group",
-    "Writing group",
-    "Supplements group",
-    "PT/Audiology Group",
+    "Athletic Trainer",
     "Audiology",
-    "Yoga",
+    "Behavioral Health",
+    "Dietician",
+    "Equine Therapy",
     "Evaluation Group",
+    "Moral Injury",
+    "Neuropsychology",
+    "PT/Audiology Group",
+    "Pharmacology",
+    "Physical Therapy",
+    "Primary Care",
+    "Psychiatry",
+    "Reading Group",
+    "Sleep group",
+    "Speech-Language Pathology",
+    "Supplements group",
+    "Writing group",
+    "Yoga",
 ]
 
 PREDEFINED_ROOMS = [
+    "Audiology Room",
+    "Brittany's Office",
+    "Conference Room",
+    "Gym",
+    "Jason's Office",
+    "Lounge",
+    "Off-site",
     "Room 1",
     "Room 2",
-    "Room 3",
-    "Room 4",
-    "Gym",
-    "VNG Room",
-    "Audiology Room",
     "Room 207",
     "Room 208",
-    "Lounge",
-    "Conference Room",
-    "Jason's Office",
-    "Brittany's Office",
+    "Room 3",
+    "Room 4",
     "Suite 1",
     "Suite 2",
     "Suite 3",
-    "Off-site",
+    "VNG Room",
 ]
 
 DEFAULT_PROVIDER_NAMES = [
-    "Daniel Fenton",
-    "Heidi Greata",
-    "Elizabeth Watt",
-    "Dana Lebo",
-    "Shawn Kane",
-    "Evan Vitello",
-    "Robert Kanser",
-    "Wesley Cole",
     "Ali Giacona",
-    "Sarah Teague",
     "Carter Smith",
-    "Michelle Ward",
-    "Lisa Padgett",
     "Christine Flicek",
-    "Equine",
+    "Dana Lebo",
+    "Daniel Fenton",
     "Devon Weist",
+    "Elizabeth Lewis",
+    "Elizabeth Watt",
+    "Equine",
+    "Evan Vitello",
+    "Heidi Greata",
+    "Lisa Padgett",
+    "Michelle Ward",
+    "Robert Kanser",
+    "Sarah Teague",
+    "Shawn Kane",
+    "Wesley Cole",
 ]
+
+ROOM_TIER_DEFAULTS = {
+    "Suite 1": 1,
+    "Suite 2": 1,
+    "Suite 3": 1,
+    "Brittany's Office": 2,
+    "Conference Room": 2,
+    "Jason's Office": 3,
+}
 
 DISCIPLINE_COLORS = {
     "Primary Care": "#7cb5ec",
@@ -285,11 +299,16 @@ def build_provider_records_from_profiles(provider_profiles: List[Dict[str, Any]]
                 }
             )
 
-        discipline = str(profile.get("discipline", "")).strip()
-        disciplines = [discipline] if discipline else list(DISCIPLINES)
+        discipline_list = [str(d).strip() for d in (profile.get("disciplines") or []) if str(d).strip()]
+        if not discipline_list:
+            discipline = str(profile.get("discipline", "")).strip()
+            discipline_list = [discipline] if discipline else []
+        disciplines = sorted(dict.fromkeys(discipline_list), key=lambda x: x.split()[0].lower()) if discipline_list else list(DISCIPLINES)
         allowed_rooms = profile.get("allowed_rooms") or ["Any compatible room"]
         if "Any compatible room" in allowed_rooms:
             allowed_rooms = list(PREDEFINED_ROOMS)
+        else:
+            allowed_rooms = sorted(dict.fromkeys([r for r in allowed_rooms if r in PREDEFINED_ROOMS]), key=lambda x: x.split()[0].lower())
 
         records.append(
             {
@@ -299,6 +318,9 @@ def build_provider_records_from_profiles(provider_profiles: List[Dict[str, Any]]
                 "templates": templates,
                 "exceptions": exceptions,
                 "allowed_rooms": allowed_rooms,
+                "enforce_lunch_break": bool(profile.get("enforce_lunch_break", False)),
+                "lunch_earliest_start_minute": int(profile.get("lunch_earliest_start_minute", 11 * 60 + 30)),
+                "lunch_latest_start_minute": int(profile.get("lunch_latest_start_minute", 13 * 60)),
             }
         )
 
@@ -314,7 +336,8 @@ def build_room_records(room_rules: Dict[str, Any] | None = None) -> List[Dict[st
                 "id": room,
                 "name": room,
                 "capacity": 10,
-                "allowed_disciplines": list(DISCIPLINES),
+                "allowed_disciplines": rr.get("allowed_disciplines") or list(DISCIPLINES),
+                "room_preference_tier": int(rr.get("room_preference_tier", 0) or 0),
                 "unavailable_weekly": rr.get("unavailable_weekly", {}),
                 "unavailable_dates": _date_rule_list_to_map(rr.get("unavailable_dates", [])),
                 "available_only_weekly": rr.get("available_only_weekly", {}),
@@ -423,8 +446,10 @@ class SchedulerDesktopApp:
         self.root.title("Therapy Scheduler - Visual Planner")
         self.root.geometry("1380x900")
 
+        saved_profiles_payload = load_provider_profiles().get("providers", [])
+        provider_seed = saved_profiles_payload if saved_profiles_payload else load_provider_catalog_entries(DEFAULT_PROVIDER_NAMES)
         self.provider_profiles = normalize_provider_catalog(
-            load_provider_catalog_entries(DEFAULT_PROVIDER_NAMES),
+            provider_seed,
             defaults=DEFAULT_PROVIDER_NAMES,
             all_rooms=PREDEFINED_ROOMS,
             disciplines=DISCIPLINES,
@@ -440,14 +465,40 @@ class SchedulerDesktopApp:
             windows = conf.setdefault("unavailable_weekly", {}).setdefault(wd, [])
             if not any(int(w.get("start_minute", -1)) == 8 * 60 + 30 and int(w.get("end_minute", -1)) == 11 * 60 for w in windows):
                 windows.append({"start_minute": 8 * 60 + 30, "end_minute": 11 * 60})
+        for room_name in PREDEFINED_ROOMS:
+            bucket = self.room_rules.setdefault("rooms", {}).setdefault(
+                room_name,
+                {"unavailable_weekly": {i: [] for i in range(5)}, "unavailable_dates": [], "available_only_weekly": {i: [] for i in range(5)}, "available_only_dates": []},
+            )
+            bucket.setdefault("allowed_disciplines", list(DISCIPLINES))
+            bucket.setdefault("room_preference_tier", ROOM_TIER_DEFAULTS.get(room_name, 0))
+
+        latest_discipline_profile = load_room_discipline_profile(PREDEFINED_ROOMS)
+        if latest_discipline_profile:
+            latest_rooms = latest_discipline_profile.get("rooms", {})
+            for room_name in PREDEFINED_ROOMS:
+                if room_name not in latest_rooms:
+                    continue
+                source = latest_rooms.get(room_name, {})
+                target = self.room_rules.setdefault("rooms", {}).setdefault(room_name, {})
+                if "allowed_disciplines" in source:
+                    target["allowed_disciplines"] = list(source.get("allowed_disciplines") or list(DISCIPLINES))
+                if "room_preference_tier" in source:
+                    target["room_preference_tier"] = int(source.get("room_preference_tier", ROOM_TIER_DEFAULTS.get(room_name, 0)) or 0)
         save_room_rules(self.room_rules, valid_rooms=PREDEFINED_ROOMS)
         self.last_generated_schedule = load_last_generated_schedule()
         self.last_result: Dict[str, Any] | None = None
-        raw_conditions = load_requirements_catalog()
+        requirements_payload = load_requirements_catalog()
         self.auto_conditions: List[Dict[str, Any]] = []
-        for condition in raw_conditions:
+        self.eval_conditions: List[Dict[str, Any]] = []
+        for condition in requirements_payload.get("iop_requirements", []):
             try:
                 self.auto_conditions.append(validate_requirement(condition))
+            except Exception:
+                continue
+        for condition in requirements_payload.get("eval_requirements", []):
+            try:
+                self.eval_conditions.append(validate_requirement(condition))
             except Exception:
                 continue
         self.auto_reconfigure_history: List[List[Dict[str, Any]]] = []
@@ -463,6 +514,56 @@ class SchedulerDesktopApp:
             self.status_var.set("Status: Restored last profile")
             self.profile_var.set("Profile: restored from data/last_profile.json")
             self._refresh_profile_preview()
+
+    def _make_scrollable_container(self, parent) -> Tuple[Any, Any]:
+        tk = self.tk
+        ttk = self.ttk
+        outer = ttk.Frame(parent)
+        canvas = tk.Canvas(outer, highlightthickness=0)
+        vscroll = ttk.Scrollbar(outer, orient=tk.VERTICAL, command=canvas.yview)
+        hscroll = ttk.Scrollbar(outer, orient=tk.HORIZONTAL, command=canvas.xview)
+        canvas.configure(yscrollcommand=vscroll.set, xscrollcommand=hscroll.set)
+
+        canvas.grid(row=0, column=0, sticky="nsew")
+        vscroll.grid(row=0, column=1, sticky="ns")
+        hscroll.grid(row=1, column=0, sticky="ew")
+        outer.rowconfigure(0, weight=1)
+        outer.columnconfigure(0, weight=1)
+
+        content = ttk.Frame(canvas)
+        canvas.create_window((0, 0), window=content, anchor="nw")
+
+        def _sync_scrollregion(_event=None):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        content.bind("<Configure>", _sync_scrollregion)
+        return outer, content
+
+    def _make_scrollable_tab(self, notebook) -> Any:
+        tk = self.tk
+        ttk = self.ttk
+        outer = ttk.Frame(notebook)
+        canvas = tk.Canvas(outer, highlightthickness=0)
+        vscroll = ttk.Scrollbar(outer, orient=tk.VERTICAL, command=canvas.yview)
+        hscroll = ttk.Scrollbar(outer, orient=tk.HORIZONTAL, command=canvas.xview)
+        canvas.configure(yscrollcommand=vscroll.set, xscrollcommand=hscroll.set)
+
+        canvas.grid(row=0, column=0, sticky="nsew")
+        vscroll.grid(row=0, column=1, sticky="ns")
+        hscroll.grid(row=1, column=0, sticky="ew")
+        outer.rowconfigure(0, weight=1)
+        outer.columnconfigure(0, weight=1)
+
+        content = ttk.Frame(canvas)
+        window_id = canvas.create_window((0, 0), window=content, anchor="nw")
+
+        def _sync_scrollregion(_event=None):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        content.bind("<Configure>", _sync_scrollregion)
+        setattr(outer, "_scroll_canvas", canvas)
+        setattr(outer, "_scroll_content", content)
+        return outer
 
     def _build_layout(self) -> None:
         tk = self.tk
@@ -497,23 +598,28 @@ class SchedulerDesktopApp:
         notebook.pack(fill=tk.BOTH, expand=True, pady=(8, 8))
         self.main_notebook = notebook
 
-        manual_tab = ttk.Frame(notebook)
+        manual_tab = self._make_scrollable_tab(notebook)
         self.manual_tab = manual_tab
         notebook.add(manual_tab, text="Manual Scheduler")
+        manual_content = getattr(manual_tab, "_scroll_content")
 
-        auto_tab = ttk.Frame(notebook)
+        auto_tab = self._make_scrollable_tab(notebook)
         notebook.add(auto_tab, text="IOP Generator (3-week)")
+        auto_content = getattr(auto_tab, "_scroll_content")
 
-        eval_tab = ttk.Frame(notebook)
+        eval_tab = self._make_scrollable_tab(notebook)
         notebook.add(eval_tab, text="EVAL Generator")
+        eval_content = getattr(eval_tab, "_scroll_content")
 
-        provider_tab = ttk.Frame(notebook)
+        provider_tab = self._make_scrollable_tab(notebook)
         notebook.add(provider_tab, text="Provider Profiles")
+        provider_content = getattr(provider_tab, "_scroll_content")
 
-        room_rules_tab = ttk.Frame(notebook)
+        room_rules_tab = self._make_scrollable_tab(notebook)
         notebook.add(room_rules_tab, text="Room Rules")
+        room_rules_content = getattr(room_rules_tab, "_scroll_content")
 
-        upper = ttk.Panedwindow(manual_tab, orient=tk.HORIZONTAL)
+        upper = ttk.Panedwindow(manual_content, orient=tk.HORIZONTAL)
         upper.pack(fill=tk.BOTH, expand=True, pady=(0, 8))
 
         form_wrap = ttk.Labelframe(upper, text="Inputs", padding=8)
@@ -527,7 +633,7 @@ class SchedulerDesktopApp:
         self.summary_text.insert(tk.END, "Create or load a profile to begin.\n")
         self.summary_text.configure(state=tk.DISABLED)
 
-        grid_wrap = ttk.Labelframe(manual_tab, text="Patient Schedule Grid", padding=8)
+        grid_wrap = ttk.Labelframe(manual_content, text="Patient Schedule Grid", padding=8)
         grid_wrap.pack(fill=tk.BOTH, expand=True)
 
         grid_container = ttk.Frame(grid_wrap)
@@ -552,9 +658,9 @@ class SchedulerDesktopApp:
         ttk.Button(arrow_frame, text="▼", width=3, command=lambda: self.grid_canvas.yview_scroll(6, "units")).pack(pady=4)
 
         self.legend_var = tk.StringVar(value="Legend: Add appointments to visualize schedule.")
-        ttk.Label(manual_tab, textvariable=self.legend_var).pack(anchor="w", pady=(6, 0))
+        ttk.Label(manual_content, textvariable=self.legend_var).pack(anchor="w", pady=(6, 0))
 
-        view_controls = ttk.Frame(manual_tab)
+        view_controls = ttk.Frame(manual_content)
         view_controls.pack(fill=tk.X, pady=(4, 0))
         self.grid_mode_var = tk.StringVar(value="Patient Grid")
         self.program_filter_var = tk.StringVar(value="Both")
@@ -563,13 +669,16 @@ class SchedulerDesktopApp:
         ttk.Label(view_controls, text="Program Filter").pack(side="left", padx=(10, 0))
         ttk.Combobox(view_controls, textvariable=self.program_filter_var, values=["Both", "IOP", "EVAL"], state="readonly", width=10).pack(side="left", padx=4)
         ttk.Button(view_controls, text="Apply View", command=lambda: self._safe_action(self.refresh_current_grid_view)).pack(side="left", padx=8)
-        ttk.Button(view_controls, text="Export PNG (Current View)", command=lambda: self._safe_action(self.export_view_as_png)).pack(side="left", padx=6)
-        ttk.Button(view_controls, text="Export PPTX (Current Date)", command=lambda: self._safe_action(self.export_view_as_pptx)).pack(side="left", padx=6)
+        ttk.Button(view_controls, text="Export Schedule as PNG", command=lambda: self._safe_action(self.export_view_as_png)).pack(side="left", padx=6)
+        ttk.Button(view_controls, text="Export as PowerPoint", command=lambda: self._safe_action(self.export_view_as_pptx)).pack(side="left", padx=6)
 
-        self._build_auto_generator_tab(auto_tab)
-        self._build_eval_generator_tab(eval_tab)
-        self._build_provider_profiles_tab(provider_tab)
-        self._build_room_rules_tab(room_rules_tab)
+        self._build_auto_generator_tab(auto_content)
+        self._build_eval_generator_tab(eval_content)
+        self._build_provider_profiles_tab(provider_content)
+        self._build_room_rules_tab(room_rules_content)
+
+        sizegrip = ttk.Sizegrip(main)
+        sizegrip.pack(side=tk.RIGHT, anchor="se", padx=(0, 4), pady=(0, 4))
 
     def _build_auto_generator_tab(self, parent) -> None:
         ttk = self.ttk
@@ -656,7 +765,7 @@ class SchedulerDesktopApp:
         ttk.Combobox(cond, textvariable=self.auto_mode_var, values=["individual", "group"], state="readonly", width=11).grid(row=1, column=6, padx=2)
 
         ttk.Label(cond, text="Duration").grid(row=0, column=7, sticky="w")
-        ttk.Combobox(cond, textvariable=self.auto_duration_var, values=[str(i) for i in range(15, 181, 15)], state="readonly", width=8).grid(row=1, column=7, padx=2)
+        ttk.Combobox(cond, textvariable=self.auto_duration_var, values=[str(i) for i in range(15, 241, 15)], state="readonly", width=8).grid(row=1, column=7, padx=2)
         ttk.Label(cond, text="Sessions / week").grid(row=0, column=8, sticky="w")
         ttk.Combobox(cond, textvariable=self.auto_sessions_per_week_var, values=[str(i) for i in range(1, 6)], state="readonly", width=10).grid(row=1, column=8, padx=2)
 
@@ -700,6 +809,8 @@ class SchedulerDesktopApp:
         ttk.Label(cond, text="Provider availability windows are managed in Provider List Management below.", foreground="#495057").grid(row=7, column=0, columnspan=8, sticky="w", pady=(6, 0))
         action_row = ttk.Frame(cond)
         action_row.grid(row=8, column=0, columnspan=8, sticky="w", pady=(8, 0))
+        self.show_eval_requirements_var = self.tk.BooleanVar(value=False)
+        ttk.Checkbutton(action_row, text="Show EVAL Requirements", variable=self.show_eval_requirements_var, command=lambda: self._safe_action(self._refresh_auto_condition_list)).pack(side="left", padx=4)
         ttk.Button(action_row, text="Add Requirement", command=lambda: self._safe_action(self.add_auto_condition)).pack(side="left", padx=4)
         ttk.Button(action_row, text="Edit Selected", command=lambda: self._safe_action(self.edit_selected_condition)).pack(side="left", padx=4)
         ttk.Button(action_row, text="Duplicate Selected", command=lambda: self._safe_action(self.duplicate_selected_condition)).pack(side="left", padx=4)
@@ -715,6 +826,7 @@ class SchedulerDesktopApp:
         self.auto_condition_list.pack(side="left", fill="both", expand=True)
         list_scroll.pack(side="right", fill="y")
         self.auto_condition_list.bind("<<ListboxSelect>>", self._on_requirement_select)
+        self.auto_condition_view_index: List[Tuple[str, int]] = []
 
         output_frame = ttk.Labelframe(parent, text="Generation Status / Bottleneck Report", padding=10)
         output_frame.pack(fill="both", expand=True, padx=6, pady=6)
@@ -732,6 +844,8 @@ class SchedulerDesktopApp:
         self._refresh_auto_condition_list()
     def _build_eval_generator_tab(self, parent) -> None:
         ttk = self.ttk
+        time_choices = military_time_choices()
+        weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
         frame = ttk.Labelframe(parent, text="3-Day EVAL Generator", padding=10)
         frame.pack(fill="x", padx=6, pady=6)
 
@@ -742,7 +856,6 @@ class SchedulerDesktopApp:
         self.eval_patient_count_var = self.tk.StringVar(value="3")
         self.eval_group_start_var = self.tk.StringVar(value="0830")
         self.eval_group_duration_var = self.tk.StringVar(value="60")
-        self.eval_art_group_var = self.tk.BooleanVar(value=False)
 
         ttk.Label(frame, text="Cohort Start Year").grid(row=0, column=0, sticky="w")
         ttk.Combobox(frame, textvariable=self.eval_start_year_var, values=self.year_choices if hasattr(self, "year_choices") else [str(datetime.utcnow().year)], state="readonly", width=8).grid(row=1, column=0, padx=2)
@@ -759,8 +872,79 @@ class SchedulerDesktopApp:
         ttk.Label(frame, text="Day-1 Group Start").grid(row=0, column=5, sticky="w")
         ttk.Combobox(frame, textvariable=self.eval_group_start_var, values=["0830", "0930", "1000"], state="readonly", width=8).grid(row=1, column=5, padx=2)
         ttk.Label(frame, text="Group Duration").grid(row=0, column=6, sticky="w")
-        ttk.Combobox(frame, textvariable=self.eval_group_duration_var, values=[str(i) for i in range(30, 181, 15)], state="readonly", width=8).grid(row=1, column=6, padx=2)
-        ttk.Checkbutton(frame, text="Art Therapy as group", variable=self.eval_art_group_var).grid(row=1, column=7, padx=8)
+        ttk.Combobox(frame, textvariable=self.eval_group_duration_var, values=[str(i) for i in range(30, 241, 15)], state="readonly", width=8).grid(row=1, column=6, padx=2)
+
+        req = ttk.Labelframe(parent, text="EVAL Requirements Builder", padding=10)
+        req.pack(fill="x", padx=6, pady=(0, 6))
+        self.eval_req_id_var = self.tk.StringVar(value=f"eval_req_{len(self.eval_conditions)+1}")
+        self.eval_discipline_var = self.tk.StringVar(value=DISCIPLINES[0])
+        self.eval_provider_var = self.tk.StringVar(value="Any provider")
+        self.eval_room_var = self.tk.StringVar(value="Any compatible room")
+        self.eval_mode_var = self.tk.StringVar(value="individual")
+        self.eval_duration_var = self.tk.StringVar(value="60")
+        self.eval_scope_var = self.tk.StringVar(value="all")
+        self.eval_subset_patients_var = self.tk.StringVar(value="")
+        self.eval_weekday_1_var = self.tk.StringVar(value="Monday")
+        self.eval_weekday_2_var = self.tk.StringVar(value="(none)")
+        self.eval_weekday_3_var = self.tk.StringVar(value="(none)")
+        self.eval_window_start_var = self.tk.StringVar(value="0830")
+        self.eval_window_end_var = self.tk.StringVar(value="1700")
+        self.eval_windows_var = self.tk.StringVar(value="")
+        self.eval_hard_var = self.tk.BooleanVar(value=True)
+        self.eval_priority_var = self.tk.StringVar(value="100")
+
+        provider_values = ["Any provider"] + self.provider_catalog
+        room_values = ["Any compatible room"] + PREDEFINED_ROOMS
+        ttk.Label(req, text="Requirement ID").grid(row=0, column=0, sticky="w")
+        ttk.Entry(req, textvariable=self.eval_req_id_var, width=14).grid(row=1, column=0, padx=2)
+        ttk.Label(req, text="Discipline").grid(row=0, column=1, sticky="w")
+        ttk.Combobox(req, textvariable=self.eval_discipline_var, values=DISCIPLINES, state="readonly", width=20).grid(row=1, column=1, padx=2)
+        ttk.Label(req, text="Provider").grid(row=0, column=2, sticky="w")
+        ttk.Combobox(req, textvariable=self.eval_provider_var, values=provider_values, state="readonly", width=18).grid(row=1, column=2, padx=2)
+        ttk.Label(req, text="Room").grid(row=0, column=3, sticky="w")
+        ttk.Combobox(req, textvariable=self.eval_room_var, values=room_values, state="readonly", width=18).grid(row=1, column=3, padx=2)
+        ttk.Label(req, text="Mode").grid(row=0, column=4, sticky="w")
+        ttk.Combobox(req, textvariable=self.eval_mode_var, values=["individual", "group"], state="readonly", width=10).grid(row=1, column=4, padx=2)
+        ttk.Label(req, text="Duration").grid(row=0, column=5, sticky="w")
+        ttk.Combobox(req, textvariable=self.eval_duration_var, values=[str(i) for i in range(15, 241, 15)], state="readonly", width=8).grid(row=1, column=5, padx=2)
+
+        ttk.Label(req, text="Patient Scope").grid(row=2, column=0, sticky="w", pady=(6, 0))
+        ttk.Combobox(req, textvariable=self.eval_scope_var, values=["all", "single", "subset"], state="readonly", width=12).grid(row=3, column=0, padx=2)
+        ttk.Label(req, text="Subset/Single IDs").grid(row=2, column=1, sticky="w", pady=(6, 0))
+        ttk.Entry(req, textvariable=self.eval_subset_patients_var, width=20).grid(row=3, column=1, padx=2)
+        ttk.Label(req, text="Weekday 1").grid(row=2, column=2, sticky="w", pady=(6, 0))
+        ttk.Combobox(req, textvariable=self.eval_weekday_1_var, values=weekdays, state="readonly", width=12).grid(row=3, column=2, padx=2)
+        ttk.Label(req, text="Weekday 2").grid(row=2, column=3, sticky="w", pady=(6, 0))
+        ttk.Combobox(req, textvariable=self.eval_weekday_2_var, values=["(none)"] + weekdays, state="readonly", width=12).grid(row=3, column=3, padx=2)
+        ttk.Label(req, text="Weekday 3").grid(row=2, column=4, sticky="w", pady=(6, 0))
+        ttk.Combobox(req, textvariable=self.eval_weekday_3_var, values=["(none)"] + weekdays, state="readonly", width=12).grid(row=3, column=4, padx=2)
+
+        ttk.Label(req, text="Window Start").grid(row=4, column=0, sticky="w", pady=(6, 0))
+        ttk.Combobox(req, textvariable=self.eval_window_start_var, values=time_choices, state="readonly", width=10).grid(row=5, column=0, padx=2)
+        ttk.Label(req, text="Window End").grid(row=4, column=1, sticky="w", pady=(6, 0))
+        ttk.Combobox(req, textvariable=self.eval_window_end_var, values=time_choices, state="readonly", width=10).grid(row=5, column=1, padx=2)
+        ttk.Button(req, text="Add Appointment Window", command=lambda: self._safe_action(self.add_eval_requirement_window)).grid(row=5, column=2, padx=4)
+        ttk.Label(req, text="Appointment Windows").grid(row=4, column=3, sticky="w", pady=(6, 0))
+        ttk.Entry(req, textvariable=self.eval_windows_var, width=30).grid(row=5, column=3, columnspan=2, padx=2, sticky="w")
+        ttk.Checkbutton(req, text="Hard constraint", variable=self.eval_hard_var).grid(row=5, column=5, sticky="w")
+        ttk.Combobox(req, textvariable=self.eval_priority_var, values=["25", "50", "75", "100"], state="readonly", width=8).grid(row=5, column=6, padx=2)
+        ttk.Label(req, text="Priority").grid(row=4, column=6, sticky="w", pady=(6, 0))
+
+        eval_row = ttk.Frame(req)
+        eval_row.grid(row=6, column=0, columnspan=7, sticky="w", pady=(8, 0))
+        ttk.Button(eval_row, text="Add Requirement", command=lambda: self._safe_action(self.add_eval_condition)).pack(side="left", padx=4)
+        ttk.Button(eval_row, text="Edit Selected", command=lambda: self._safe_action(self.edit_selected_eval_condition)).pack(side="left", padx=4)
+        ttk.Button(eval_row, text="Remove Selected Requirement", command=lambda: self._safe_action(self.remove_selected_eval_condition)).pack(side="left", padx=4)
+
+        eval_list_frame = ttk.Labelframe(parent, text="EVAL Requirement List", padding=8)
+        eval_list_frame.pack(fill="both", expand=True, padx=6, pady=(0, 6))
+        eval_scroll = ttk.Scrollbar(eval_list_frame, orient=self.tk.VERTICAL)
+        self.eval_condition_list = self.tk.Listbox(eval_list_frame, height=7, yscrollcommand=eval_scroll.set)
+        eval_scroll.config(command=self.eval_condition_list.yview)
+        self.eval_condition_list.pack(side="left", fill="both", expand=True)
+        eval_scroll.pack(side="right", fill="y")
+        self.eval_condition_list.bind("<<ListboxSelect>>", self._on_eval_requirement_select)
+        self._refresh_eval_condition_list()
 
         actions = ttk.Frame(parent)
         actions.pack(fill="x", padx=6, pady=(0, 6))
@@ -783,14 +967,17 @@ class SchedulerDesktopApp:
 
         wrapper = ttk.Frame(parent, padding=8)
         wrapper.pack(fill="both", expand=True)
-        wrapper.columnconfigure(0, weight=1)
-        wrapper.columnconfigure(1, weight=2)
-        wrapper.rowconfigure(0, weight=1)
 
-        left = ttk.Labelframe(wrapper, text="Providers", padding=8)
-        left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
-        right = ttk.Labelframe(wrapper, text="Provider Profile", padding=8)
-        right.grid(row=0, column=1, sticky="nsew")
+        split = ttk.Panedwindow(wrapper, orient=tk.HORIZONTAL)
+        split.pack(fill="both", expand=True)
+
+        left = ttk.Labelframe(split, text="Providers", padding=8)
+        right = ttk.Labelframe(split, text="Provider Profile", padding=8)
+        split.add(left, weight=1)
+        split.add(right, weight=3)
+
+        right_wrap, right_content = self._make_scrollable_container(right)
+        right_wrap.pack(fill="both", expand=True)
 
         self.provider_search_var = tk.StringVar(value="")
         ttk.Label(left, text="Search").pack(anchor="w")
@@ -798,30 +985,42 @@ class SchedulerDesktopApp:
         search_entry.pack(fill="x", pady=(0, 6))
         search_entry.bind("<KeyRelease>", lambda _e: self.refresh_provider_profile_list())
 
-        list_scroll = ttk.Scrollbar(left, orient=tk.VERTICAL)
-        self.provider_search_list = tk.Listbox(left, height=24, yscrollcommand=list_scroll.set)
+        provider_list_wrap = ttk.Frame(left)
+        provider_list_wrap.pack(fill="both", expand=True)
+        list_scroll = ttk.Scrollbar(provider_list_wrap, orient=tk.VERTICAL)
+        list_xscroll = ttk.Scrollbar(provider_list_wrap, orient=tk.HORIZONTAL)
+        self.provider_search_list = tk.Listbox(
+            provider_list_wrap,
+            height=24,
+            yscrollcommand=list_scroll.set,
+            xscrollcommand=list_xscroll.set,
+        )
         list_scroll.config(command=self.provider_search_list.yview)
-        self.provider_search_list.pack(side="left", fill="both", expand=True)
-        list_scroll.pack(side="right", fill="y")
+        list_xscroll.config(command=self.provider_search_list.xview)
+        self.provider_search_list.grid(row=0, column=0, sticky="nsew")
+        list_scroll.grid(row=0, column=1, sticky="ns")
+        list_xscroll.grid(row=1, column=0, sticky="ew")
+        provider_list_wrap.rowconfigure(0, weight=1)
+        provider_list_wrap.columnconfigure(0, weight=1)
         self.provider_search_list.bind("<<ListboxSelect>>", self._on_provider_profile_select)
 
         self.provider_profile_id_var = tk.StringVar(value="")
         self.provider_profile_name_var = tk.StringVar(value="")
-        self.provider_profile_discipline_var = tk.StringVar(value=DISCIPLINES[0])
+        self.provider_profile_disciplines_var = tk.StringVar(value="")
 
         row = 0
-        ttk.Label(right, text="Provider ID").grid(row=row, column=0, sticky="w")
-        ttk.Entry(right, textvariable=self.provider_profile_id_var, state="readonly", width=24).grid(row=row, column=1, sticky="w", padx=4)
+        ttk.Label(right_content, text="Provider ID").grid(row=row, column=0, sticky="w")
+        ttk.Entry(right_content, textvariable=self.provider_profile_id_var, state="readonly", width=24).grid(row=row, column=1, sticky="w", padx=4)
         row += 1
-        ttk.Label(right, text="Provider Name").grid(row=row, column=0, sticky="w")
-        ttk.Entry(right, textvariable=self.provider_profile_name_var, width=30).grid(row=row, column=1, sticky="w", padx=4)
+        ttk.Label(right_content, text="Provider Name").grid(row=row, column=0, sticky="w")
+        ttk.Entry(right_content, textvariable=self.provider_profile_name_var, width=30).grid(row=row, column=1, sticky="w", padx=4)
         row += 1
-        ttk.Label(right, text="Discipline").grid(row=row, column=0, sticky="w")
-        ttk.Combobox(right, textvariable=self.provider_profile_discipline_var, values=[""] + DISCIPLINES, state="readonly", width=28).grid(row=row, column=1, sticky="w", padx=4)
+        ttk.Label(right_content, text="Disciplines (up to 5, comma-separated)").grid(row=row, column=0, sticky="w")
+        ttk.Entry(right_content, textvariable=self.provider_profile_disciplines_var, width=42).grid(row=row, column=1, sticky="w", padx=4)
         row += 1
 
-        ttk.Label(right, text="Allowed Rooms").grid(row=row, column=0, sticky="nw", pady=(6, 0))
-        rooms_frame = ttk.Frame(right)
+        ttk.Label(right_content, text="Allowed Rooms").grid(row=row, column=0, sticky="nw", pady=(6, 0))
+        rooms_frame = ttk.Frame(right_content)
         rooms_frame.grid(row=row, column=1, sticky="w", pady=(6, 0))
         self.allowed_room_vars = {"Any compatible room": tk.BooleanVar(value=True)}
         ttk.Checkbutton(rooms_frame, text="Any compatible room", variable=self.allowed_room_vars["Any compatible room"], command=self._on_allowed_room_toggle).grid(row=0, column=0, sticky="w")
@@ -831,7 +1030,7 @@ class SchedulerDesktopApp:
             ttk.Checkbutton(rooms_frame, text=room, variable=var, command=self._on_allowed_room_toggle).grid(row=idx, column=0, sticky="w")
         row += 1
 
-        avail = ttk.Labelframe(right, text="General Availability (Mon-Fri)", padding=6)
+        avail = ttk.Labelframe(right_content, text="General Availability (Mon-Fri)", padding=6)
         avail.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         self.profile_avail_weekday_var = tk.StringVar(value="Monday")
         self.profile_avail_start_var = tk.StringVar(value="0730")
@@ -845,7 +1044,7 @@ class SchedulerDesktopApp:
         self.provider_availability_list.grid(row=1, column=0, columnspan=5, sticky="ew", pady=(4, 0))
         row += 1
 
-        ex = ttk.Labelframe(right, text="Exceptions", padding=6)
+        ex = ttk.Labelframe(right_content, text="Exceptions", padding=6)
         ex.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         self.profile_exception_kind_var = tk.StringVar(value="unavailable")
         self.profile_exception_date_var = tk.StringVar(value=date_to_key(datetime.utcnow().date()))
@@ -861,11 +1060,23 @@ class SchedulerDesktopApp:
         self.provider_exception_list.grid(row=1, column=0, columnspan=6, sticky="ew", pady=(4, 0))
         row += 1
 
-        self.provider_profile_preview_canvas = tk.Canvas(right, width=620, height=180, bg="white", highlightthickness=1, highlightbackground="#ced4da")
+        lunch = ttk.Labelframe(right_content, text="Lunch", padding=6)
+        lunch.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        self.provider_lunch_enforce_var = tk.BooleanVar(value=False)
+        self.provider_lunch_earliest_var = tk.StringVar(value="1130")
+        self.provider_lunch_latest_var = tk.StringVar(value="1300")
+        ttk.Checkbutton(lunch, text="Enforce 30-min lunch break", variable=self.provider_lunch_enforce_var).grid(row=0, column=0, columnspan=2, sticky="w")
+        ttk.Label(lunch, text="Earliest Start").grid(row=1, column=0, sticky="w")
+        ttk.Combobox(lunch, textvariable=self.provider_lunch_earliest_var, values=time_choices, state="readonly", width=10).grid(row=2, column=0, padx=2)
+        ttk.Label(lunch, text="Latest Start").grid(row=1, column=1, sticky="w")
+        ttk.Combobox(lunch, textvariable=self.provider_lunch_latest_var, values=time_choices, state="readonly", width=10).grid(row=2, column=1, padx=2)
+        row += 1
+
+        self.provider_profile_preview_canvas = tk.Canvas(right_content, width=620, height=180, bg="white", highlightthickness=1, highlightbackground="#ced4da")
         self.provider_profile_preview_canvas.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         row += 1
 
-        btns = ttk.Frame(right)
+        btns = ttk.Frame(right_content)
         btns.grid(row=row, column=0, columnspan=2, sticky="w", pady=(8, 0))
         ttk.Button(btns, text="Save/Update", command=lambda: self._safe_action(self.save_selected_provider_profile)).pack(side="left", padx=4)
         ttk.Button(btns, text="Revert Changes", command=lambda: self._safe_action(self.revert_selected_provider_profile)).pack(side="left", padx=4)
@@ -883,17 +1094,35 @@ class SchedulerDesktopApp:
 
         wrap = ttk.Frame(parent, padding=8)
         wrap.pack(fill="both", expand=True)
-        wrap.columnconfigure(0, weight=1)
-        wrap.columnconfigure(1, weight=2)
-        wrap.rowconfigure(0, weight=1)
 
-        left = ttk.Labelframe(wrap, text="Rooms", padding=8)
-        left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
-        right = ttk.Labelframe(wrap, text="Room Availability Restrictions", padding=8)
-        right.grid(row=0, column=1, sticky="nsew")
+        split = ttk.Panedwindow(wrap, orient=tk.HORIZONTAL)
+        split.pack(fill="both", expand=True)
 
-        self.room_rule_list = tk.Listbox(left, height=24)
-        self.room_rule_list.pack(fill="both", expand=True)
+        left = ttk.Labelframe(split, text="Rooms", padding=8)
+        right = ttk.Labelframe(split, text="Room Availability Restrictions", padding=8)
+        split.add(left, weight=1)
+        split.add(right, weight=3)
+
+        right_wrap, right_content = self._make_scrollable_container(right)
+        right_wrap.pack(fill="both", expand=True)
+
+        room_list_wrap = ttk.Frame(left)
+        room_list_wrap.pack(fill="both", expand=True)
+        room_list_scroll = ttk.Scrollbar(room_list_wrap, orient=tk.VERTICAL)
+        room_list_xscroll = ttk.Scrollbar(room_list_wrap, orient=tk.HORIZONTAL)
+        self.room_rule_list = tk.Listbox(
+            room_list_wrap,
+            height=24,
+            yscrollcommand=room_list_scroll.set,
+            xscrollcommand=room_list_xscroll.set,
+        )
+        room_list_scroll.config(command=self.room_rule_list.yview)
+        room_list_xscroll.config(command=self.room_rule_list.xview)
+        self.room_rule_list.grid(row=0, column=0, sticky="nsew")
+        room_list_scroll.grid(row=0, column=1, sticky="ns")
+        room_list_xscroll.grid(row=1, column=0, sticky="ew")
+        room_list_wrap.rowconfigure(0, weight=1)
+        room_list_wrap.columnconfigure(0, weight=1)
         self.room_rule_list.bind("<<ListboxSelect>>", self._on_room_rule_select)
         for room in PREDEFINED_ROOMS:
             self.room_rule_list.insert(tk.END, room)
@@ -901,19 +1130,29 @@ class SchedulerDesktopApp:
             self.room_rule_list.selection_set(0)
             self.room_rule_selected_var = tk.StringVar(value=PREDEFINED_ROOMS[0])
 
-        ttk.Label(right, text="Room").grid(row=0, column=0, sticky="w")
-        ttk.Entry(right, textvariable=self.room_rule_selected_var, state="readonly", width=24).grid(row=0, column=1, sticky="w", padx=4)
+        ttk.Label(right_content, text="Room").grid(row=0, column=0, sticky="w")
+        ttk.Entry(right_content, textvariable=self.room_rule_selected_var, state="readonly", width=24).grid(row=0, column=1, sticky="w", padx=4)
 
-        ttk.Label(right, text="Discipline compatibility").grid(row=1, column=0, sticky="w")
-        ttk.Label(right, text="All configured disciplines", foreground="#6c757d").grid(row=1, column=1, sticky="w", padx=4)
+        ttk.Label(right_content, text="Allowed Disciplines").grid(row=1, column=0, sticky="nw")
+        disciplines_frame = ttk.Frame(right_content)
+        disciplines_frame.grid(row=1, column=1, sticky="w", padx=4)
+        self.room_allowed_discipline_vars = {}
+        for idx, disc in enumerate(DISCIPLINES):
+            var = tk.BooleanVar(value=True)
+            self.room_allowed_discipline_vars[disc] = var
+            ttk.Checkbutton(disciplines_frame, text=disc, variable=var).grid(row=idx // 2, column=idx % 2, sticky="w", padx=(0, 8))
+
+        self.room_tier_var = tk.StringVar(value="0")
+        ttk.Label(right_content, text="Room Preference Tier").grid(row=2, column=0, sticky="w", pady=(6, 0))
+        ttk.Combobox(right_content, textvariable=self.room_tier_var, values=["0", "1", "2", "3"], state="readonly", width=6).grid(row=2, column=1, sticky="w", padx=4, pady=(6, 0))
 
         self.room_rule_weekday_var = tk.StringVar(value="Monday")
         self.room_rule_start_var = tk.StringVar(value="1100")
         self.room_rule_end_var = tk.StringVar(value="1300")
         self.room_rule_type_var = tk.StringVar(value="unavailable")
 
-        weekly = ttk.Labelframe(right, text="Weekly rules", padding=6)
-        weekly.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        weekly = ttk.Labelframe(right_content, text="Weekly rules", padding=6)
+        weekly.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         ttk.Combobox(weekly, textvariable=self.room_rule_weekday_var, values=weekdays, state="readonly", width=12).grid(row=0, column=0, padx=2)
         ttk.Combobox(weekly, textvariable=self.room_rule_start_var, values=time_choices, state="readonly", width=10).grid(row=0, column=1, padx=2)
         ttk.Combobox(weekly, textvariable=self.room_rule_end_var, values=time_choices, state="readonly", width=10).grid(row=0, column=2, padx=2)
@@ -928,8 +1167,8 @@ class SchedulerDesktopApp:
         self.room_rule_date_end_var = tk.StringVar(value="1300")
         self.room_rule_date_type_var = tk.StringVar(value="unavailable")
 
-        dates = ttk.Labelframe(right, text="Date-specific exceptions", padding=6)
-        dates.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        dates = ttk.Labelframe(right_content, text="Date-specific exceptions", padding=6)
+        dates.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         ttk.Entry(dates, textvariable=self.room_rule_date_var, width=12).grid(row=0, column=0, padx=2)
         ttk.Combobox(dates, textvariable=self.room_rule_date_start_var, values=time_choices, state="readonly", width=10).grid(row=0, column=1, padx=2)
         ttk.Combobox(dates, textvariable=self.room_rule_date_end_var, values=time_choices, state="readonly", width=10).grid(row=0, column=2, padx=2)
@@ -939,12 +1178,13 @@ class SchedulerDesktopApp:
         self.room_date_rules_list = tk.Listbox(dates, height=6)
         self.room_date_rules_list.grid(row=1, column=0, columnspan=6, sticky="ew", pady=(4, 0))
 
-        self.room_rules_preview_canvas = tk.Canvas(right, width=620, height=180, bg="white", highlightthickness=1, highlightbackground="#ced4da")
-        self.room_rules_preview_canvas.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        self.room_rules_preview_canvas = tk.Canvas(right_content, width=620, height=180, bg="white", highlightthickness=1, highlightbackground="#ced4da")
+        self.room_rules_preview_canvas.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(8, 0))
 
-        btns = ttk.Frame(right)
-        btns.grid(row=5, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        btns = ttk.Frame(right_content)
+        btns.grid(row=6, column=0, columnspan=2, sticky="w", pady=(8, 0))
         ttk.Button(btns, text="Save/Update", command=lambda: self._safe_action(self.save_room_rules)).pack(side="left", padx=4)
+        ttk.Button(btns, text="Save Discipline Matrix", command=lambda: self._safe_action(self.save_room_discipline_matrix_profile)).pack(side="left", padx=4)
         ttk.Button(btns, text="Revert", command=lambda: self._safe_action(self.revert_room_rules_editor)).pack(side="left", padx=4)
         ttk.Button(btns, text="Clear rules for room", command=lambda: self._safe_action(self.clear_selected_room_rules)).pack(side="left", padx=4)
 
@@ -1136,6 +1376,10 @@ class SchedulerDesktopApp:
         )
         self.provider_catalog = [p["provider_name"] for p in self.provider_profiles]
         save_provider_catalog_entries(self.provider_profiles)
+        save_provider_profiles(self.provider_profiles)
+
+    def _persist_requirements_catalog(self) -> None:
+        save_requirements_catalog(self.auto_conditions, self.eval_conditions)
 
     def _provider_profile_by_name(self, provider_name: str) -> Dict[str, Any] | None:
         key = provider_name.strip().lower()
@@ -1215,7 +1459,14 @@ class SchedulerDesktopApp:
             return
         self.provider_profile_id_var.set(profile.get("provider_id", ""))
         self.provider_profile_name_var.set(profile.get("provider_name", ""))
-        self.provider_profile_discipline_var.set(profile.get("discipline", ""))
+        disciplines = profile.get("disciplines") or ([] if not profile.get("discipline") else [profile.get("discipline")])
+        self.provider_profile_disciplines_var.set(", ".join([str(d).strip() for d in disciplines if str(d).strip()]))
+        if hasattr(self, "provider_lunch_enforce_var"):
+            self.provider_lunch_enforce_var.set(bool(profile.get("enforce_lunch_break", False)))
+            early = int(profile.get("lunch_earliest_start_minute", 11 * 60 + 30))
+            late = int(profile.get("lunch_latest_start_minute", 13 * 60))
+            self.provider_lunch_earliest_var.set(f"{early//60:02d}{early%60:02d}")
+            self.provider_lunch_latest_var.set(f"{late//60:02d}{late%60:02d}")
 
         allowed = set(profile.get("allowed_rooms") or ["Any compatible room"])
         for room_name, var in self.allowed_room_vars.items():
@@ -1268,16 +1519,26 @@ class SchedulerDesktopApp:
         name = self.provider_profile_name_var.get().strip()
         if not name:
             raise ValueError("Provider name is required")
-        discipline = self.provider_profile_discipline_var.get().strip()
-        if discipline and discipline not in DISCIPLINES:
-            raise ValueError("Select a valid discipline")
+        raw_disciplines = [x.strip() for x in self.provider_profile_disciplines_var.get().split(",") if x.strip()]
+        disciplines: List[str] = []
+        for d in raw_disciplines:
+            if d not in DISCIPLINES:
+                raise ValueError(f"Invalid discipline: {d}")
+            if d not in disciplines:
+                disciplines.append(d)
+        if len(disciplines) > 5:
+            raise ValueError("A provider can have up to 5 disciplines")
         return {
             "provider_id": pid,
             "provider_name": name,
-            "discipline": discipline,
+            "discipline": disciplines[0] if disciplines else "",
+            "disciplines": disciplines,
             "allowed_rooms": self._collect_editor_allowed_rooms(),
             "availability_templates": self._selected_provider_profile().get("availability_templates", []) if self._selected_provider_profile() else [],
             "exceptions": self._selected_provider_profile().get("exceptions", []) if self._selected_provider_profile() else [],
+            "enforce_lunch_break": bool(self.provider_lunch_enforce_var.get()) if hasattr(self, "provider_lunch_enforce_var") else False,
+            "lunch_earliest_start_minute": parse_time_input(self.provider_lunch_earliest_var.get()) if hasattr(self, "provider_lunch_earliest_var") else 11 * 60 + 30,
+            "lunch_latest_start_minute": parse_time_input(self.provider_lunch_latest_var.get()) if hasattr(self, "provider_lunch_latest_var") else 13 * 60,
         }
 
     def save_selected_provider_profile(self) -> None:
@@ -1313,7 +1574,11 @@ class SchedulerDesktopApp:
         self.selected_provider_profile_id = ""
         self.provider_profile_id_var.set(self._next_provider_id())
         self.provider_profile_name_var.set("")
-        self.provider_profile_discipline_var.set("")
+        self.provider_profile_disciplines_var.set("")
+        if hasattr(self, "provider_lunch_enforce_var"):
+            self.provider_lunch_enforce_var.set(False)
+            self.provider_lunch_earliest_var.set("1130")
+            self.provider_lunch_latest_var.set("1300")
         self.allowed_room_vars["Any compatible room"].set(True)
         self._on_allowed_room_toggle()
         self.provider_availability_list.delete(0, self.tk.END)
@@ -1469,6 +1734,8 @@ class SchedulerDesktopApp:
                 "unavailable_dates": [],
                 "available_only_weekly": {i: [] for i in range(5)},
                 "available_only_dates": [],
+                "allowed_disciplines": list(DISCIPLINES),
+                "room_preference_tier": ROOM_TIER_DEFAULTS.get(room_name, 0),
             }
         return rooms[room_name]
 
@@ -1546,6 +1813,10 @@ class SchedulerDesktopApp:
             self.room_date_rules_list.insert(self.tk.END, f"{w['date']} unavailable {w['start_minute']//60:02d}:{w['start_minute']%60:02d}-{w['end_minute']//60:02d}:{w['end_minute']%60:02d}")
         for w in bucket.get("available_only_dates", []):
             self.room_date_rules_list.insert(self.tk.END, f"{w['date']} available-only {w['start_minute']//60:02d}:{w['start_minute']%60:02d}-{w['end_minute']//60:02d}:{w['end_minute']%60:02d}")
+        allowed = set(bucket.get("allowed_disciplines") or DISCIPLINES)
+        for disc, var in getattr(self, "room_allowed_discipline_vars", {}).items():
+            var.set(disc in allowed)
+        self.room_tier_var.set(str(int(bucket.get("room_preference_tier", 0) or 0)))
         self._render_room_rules_preview(room_name)
 
     def add_room_weekly_rule(self) -> None:
@@ -1615,6 +1886,10 @@ class SchedulerDesktopApp:
         self.revert_room_rules_editor()
 
     def save_room_rules(self) -> None:
+        room_name = self._selected_room_name()
+        bucket = self._room_rule_bucket(room_name)
+        bucket["allowed_disciplines"] = [d for d, v in self.room_allowed_discipline_vars.items() if v.get()]
+        bucket["room_preference_tier"] = int(self.room_tier_var.get())
         self.room_rules = self.room_rules
         save_room_rules(self.room_rules, valid_rooms=PREDEFINED_ROOMS)
         if self.loaded_profile:
@@ -1623,6 +1898,15 @@ class SchedulerDesktopApp:
             self._render_patient_grid(self.loaded_profile, self.last_result)
         self.status_var.set("Status: Room availability rules saved")
 
+    def save_room_discipline_matrix_profile(self) -> None:
+        room_name = self._selected_room_name()
+        bucket = self._room_rule_bucket(room_name)
+        bucket["allowed_disciplines"] = [d for d, v in self.room_allowed_discipline_vars.items() if v.get()]
+        bucket["room_preference_tier"] = int(self.room_tier_var.get())
+        save_room_discipline_profile(self.room_rules, valid_rooms=PREDEFINED_ROOMS)
+        save_room_rules(self.room_rules, valid_rooms=PREDEFINED_ROOMS)
+        self.status_var.set("Status: Saved room-discipline matrix profile")
+
     def clear_selected_room_rules(self) -> None:
         room_name = self._selected_room_name()
         self.room_rules.setdefault("rooms", {})[room_name] = {
@@ -1630,6 +1914,8 @@ class SchedulerDesktopApp:
             "unavailable_dates": [],
             "available_only_weekly": {i: [] for i in range(5)},
             "available_only_dates": [],
+            "allowed_disciplines": list(DISCIPLINES),
+            "room_preference_tier": ROOM_TIER_DEFAULTS.get(room_name, 0),
         }
         self.revert_room_rules_editor()
         self.save_room_rules()
@@ -1904,7 +2190,17 @@ class SchedulerDesktopApp:
         if name in self.provider_catalog:
             raise ValueError("Provider already exists")
         self.provider_catalog = sorted(self.provider_catalog + [name])
-        self.provider_profiles.append({"provider_id": name, "provider_name": name, "discipline": "", "availability_templates": [], "exceptions": []})
+        self.provider_profiles.append({
+            "provider_id": name,
+            "provider_name": name,
+            "discipline": "",
+            "disciplines": [],
+            "availability_templates": [],
+            "exceptions": [],
+            "enforce_lunch_break": False,
+            "lunch_earliest_start_minute": 11 * 60 + 30,
+            "lunch_latest_start_minute": 13 * 60,
+        })
         self._persist_provider_catalog()
         if self.loaded_profile:
             self._sync_profile_resources(self.loaded_profile)
@@ -1972,9 +2268,13 @@ class SchedulerDesktopApp:
                     "provider_id": selected_name,
                     "provider_name": selected_name,
                     "discipline": "",
+                    "disciplines": [],
                     "availability_templates": [{"weekday": weekday, "windows": [{"start_minute": start, "end_minute": end}]}],
                     "exceptions": [],
-            "allowed_rooms": list(PREDEFINED_ROOMS),
+                    "allowed_rooms": list(PREDEFINED_ROOMS),
+                    "enforce_lunch_break": False,
+                    "lunch_earliest_start_minute": 11 * 60 + 30,
+                    "lunch_latest_start_minute": 13 * 60,
                 }
             )
 
@@ -1988,9 +2288,10 @@ class SchedulerDesktopApp:
 
     def _allowed_rooms_for_provider(self, provider_profile: Dict[str, Any], discipline: str) -> List[str]:
         allowed = provider_profile.get("allowed_rooms") or ["Any compatible room"]
+        compatible = [r for r in PREDEFINED_ROOMS if is_room_discipline_compatible(self.room_rules, r, discipline)]
         if "Any compatible room" in allowed:
-            return list(PREDEFINED_ROOMS)
-        return [r for r in allowed if r in PREDEFINED_ROOMS]
+            return compatible
+        return [r for r in allowed if r in compatible]
 
     def _on_manual_provider_selected(self) -> None:
         provider_name = self.appt_provider_var.get().strip()
@@ -2050,6 +2351,9 @@ class SchedulerDesktopApp:
         allowed_rooms = self._allowed_rooms_for_provider(provider_profile, discipline)
         if room_id not in allowed_rooms:
             raise ValueError("Selected room is not allowed for this provider profile")
+        if not is_room_discipline_compatible(self.room_rules, room_id, discipline):
+            raise ValueError("Selected room is not compatible with the appointment discipline")
+        room_tier_warning = room_preference_tier(self.room_rules, room_id) >= 3
 
         start_minute = parse_time_input(self.appt_start_var.get())
         end_minute = parse_time_input(self.appt_end_var.get())
@@ -2105,7 +2409,10 @@ class SchedulerDesktopApp:
         self.selected_request_id = None
         live_result = build_live_result_from_profile(profile)
         self.last_result = live_result
-        self.status_var.set(f"Status: Added appointment {req_id}")
+        status_text = f"Status: Added appointment {req_id}"
+        if room_tier_warning:
+            status_text += " (warning: room tier 3 last resort)"
+        self.status_var.set(status_text)
         self._render_patient_grid(profile, live_result)
         self._refresh_profile_preview()
 
@@ -2138,6 +2445,22 @@ class SchedulerDesktopApp:
             windows.append({"start_minute": start, "end_minute": end})
         return windows
 
+    def _parse_eval_windows_from_ui(self) -> List[Dict[str, int]]:
+        raw = [w.strip() for w in self.eval_windows_var.get().split(",") if w.strip()]
+        if not raw:
+            raw = [f"{self.eval_window_start_var.get()}-{self.eval_window_end_var.get()}"]
+        windows: List[Dict[str, int]] = []
+        for item in raw:
+            if "-" not in item:
+                raise ValueError(f"Invalid window '{item}'. Use HHMM-HHMM")
+            start_raw, end_raw = [p.strip() for p in item.split("-", 1)]
+            start = parse_time_input(start_raw)
+            end = parse_time_input(end_raw)
+            if end <= start:
+                raise ValueError(f"Invalid window '{item}': end must be after start")
+            windows.append({"start_minute": start, "end_minute": end})
+        return windows
+
     def _selected_weeks(self) -> List[int]:
         weeks: List[int] = []
         if self.auto_week_1_var.get():
@@ -2156,6 +2479,128 @@ class SchedulerDesktopApp:
             if pid not in PATIENT_ID_CHOICES:
                 raise ValueError(f"Patient ID '{pid}' must be in set I1-I30 or E1-E10")
         return raw
+
+    def _selected_eval_weekdays(self) -> List[int]:
+        weekday_map = {"Monday": 0, "Tuesday": 1, "Wednesday": 2, "Thursday": 3, "Friday": 4}
+        picks = [self.eval_weekday_1_var.get(), self.eval_weekday_2_var.get(), self.eval_weekday_3_var.get()]
+        out = [weekday_map[w] for w in picks if w not in ("", "(none)")]
+        if not out:
+            raise ValueError("Select at least one weekday")
+        return sorted(set(out))
+
+    def _selected_eval_scope_ids(self) -> List[str]:
+        raw = [p.strip() for p in self.eval_subset_patients_var.get().split(",") if p.strip()]
+        for pid in raw:
+            if pid not in PATIENT_ID_CHOICES:
+                raise ValueError(f"Patient ID '{pid}' must be in set I1-I30 or E1-E10")
+        return raw
+
+    def add_eval_requirement_window(self) -> None:
+        start_minute = parse_time_input(self.eval_window_start_var.get())
+        end_minute = parse_time_input(self.eval_window_end_var.get())
+        if end_minute <= start_minute:
+            raise ValueError("Window end must be after start")
+        token = f"{self.eval_window_start_var.get()}-{self.eval_window_end_var.get()}"
+        existing = [w.strip() for w in self.eval_windows_var.get().split(",") if w.strip()]
+        if token not in existing:
+            existing.append(token)
+        self.eval_windows_var.set(", ".join(existing))
+
+    def add_eval_condition(self) -> None:
+        provider_choice = self.eval_provider_var.get().strip()
+        room_choice = self.eval_room_var.get().strip()
+        provider_id = "any"
+        if provider_choice not in ("", "Any provider"):
+            profile = self._provider_profile_by_name(provider_choice)
+            provider_id = profile.get("provider_id") if profile else provider_choice
+        condition = {
+            "id": self.eval_req_id_var.get().strip() or f"eval_req_{len(self.eval_conditions)+1}",
+            "discipline": self.eval_discipline_var.get().strip(),
+            "provider_id": provider_id,
+            "provider_ids": [] if provider_id == "any" else [provider_id],
+            "room_id": "any" if room_choice == "Any compatible room" else room_choice,
+            "duration_minutes": int(self.eval_duration_var.get()),
+            "sessions_per_week": 1,
+            "session_mode": self.eval_mode_var.get().strip(),
+            "patient_scope": self.eval_scope_var.get().strip(),
+            "patient_ids": self._selected_eval_scope_ids(),
+            "weekdays": self._selected_eval_weekdays(),
+            "weeks": [1],
+            "time_windows": self._parse_eval_windows_from_ui(),
+            "hard_constraint": bool(self.eval_hard_var.get()),
+            "priority": int(self.eval_priority_var.get()),
+            "source_program": "EVAL",
+        }
+        condition = validate_requirement(condition)
+        if any(c["id"] == condition["id"] for c in self.eval_conditions):
+            raise ValueError(f"Requirement ID '{condition['id']}' already exists")
+        self.eval_conditions.append(condition)
+        self._persist_requirements_catalog()
+        self.eval_req_id_var.set(f"eval_req_{len(self.eval_conditions)+1}")
+        self.eval_windows_var.set("")
+        self._refresh_eval_condition_list()
+        self._refresh_auto_condition_list()
+
+    def _on_eval_requirement_select(self, _event=None) -> None:
+        if not self.eval_condition_list.curselection():
+            return
+        idx = int(self.eval_condition_list.curselection()[0])
+        if idx >= len(self.eval_conditions):
+            return
+        selected = self.eval_conditions[idx]
+        self.eval_req_id_var.set(selected["id"])
+        self.eval_discipline_var.set(selected.get("discipline", self.eval_discipline_var.get()))
+        self.eval_mode_var.set(selected.get("session_mode", self.eval_mode_var.get()))
+        self.eval_duration_var.set(str(selected.get("duration_minutes", self.eval_duration_var.get())))
+
+    def edit_selected_eval_condition(self) -> None:
+        selection = self.eval_condition_list.curselection()
+        if not selection:
+            raise ValueError("Select an EVAL requirement first")
+        idx = int(selection[0])
+        existing = self.eval_conditions[idx]
+        updated = {
+            **existing,
+            "discipline": self.eval_discipline_var.get().strip(),
+            "duration_minutes": int(self.eval_duration_var.get()),
+            "session_mode": self.eval_mode_var.get().strip(),
+            "time_windows": self._parse_eval_windows_from_ui(),
+            "hard_constraint": bool(self.eval_hard_var.get()),
+            "priority": int(self.eval_priority_var.get()),
+            "weekdays": self._selected_eval_weekdays(),
+            "patient_scope": self.eval_scope_var.get().strip(),
+            "patient_ids": self._selected_eval_scope_ids(),
+            "weeks": [1],
+            "source_program": "EVAL",
+        }
+        self.eval_conditions[idx] = validate_requirement(updated)
+        self._persist_requirements_catalog()
+        self._refresh_eval_condition_list()
+        self._refresh_auto_condition_list()
+
+    def remove_selected_eval_condition(self) -> None:
+        selection = self.eval_condition_list.curselection()
+        if not selection:
+            raise ValueError("Select an EVAL requirement first")
+        idx = int(selection[0])
+        self.eval_conditions.pop(idx)
+        self._persist_requirements_catalog()
+        self._refresh_eval_condition_list()
+        self._refresh_auto_condition_list()
+
+    def _refresh_eval_condition_list(self) -> None:
+        if not hasattr(self, "eval_condition_list"):
+            return
+        self.eval_condition_list.delete(0, self.tk.END)
+        if not self.eval_conditions:
+            self.eval_condition_list.insert(self.tk.END, "No EVAL requirements added yet.")
+            return
+        name_map = ["Mon", "Tue", "Wed", "Thu", "Fri"]
+        for idx, c in enumerate(self.eval_conditions, start=1):
+            days = ",".join(name_map[d] for d in c["weekdays"])
+            windows = "; ".join(f"{_to_ampm(w['start_minute'])}-{_to_ampm(w['end_minute'])}" for w in c["time_windows"])
+            line = f"{idx}) [EVAL] {c['id']} | {c['discipline']} | {c['session_mode']} {c['duration_minutes']}m | days={days} | windows={windows}"
+            self.eval_condition_list.insert(self.tk.END, line)
 
     def add_auto_condition(self) -> None:
         weekday_map = {"Monday": 0, "Tuesday": 1, "Wednesday": 2, "Thursday": 3, "Friday": 4}
@@ -2201,6 +2646,7 @@ class SchedulerDesktopApp:
             "time_windows": self._parse_windows_from_ui(),
             "hard_constraint": bool(self.auto_hard_var.get()),
             "priority": int(self.auto_priority_var.get()),
+            "source_program": "IOP",
         }
         condition = validate_requirement(condition)
 
@@ -2208,7 +2654,7 @@ class SchedulerDesktopApp:
             raise ValueError(f"Requirement ID '{condition['id']}' already exists")
 
         self.auto_conditions.append(condition)
-        save_requirements_catalog(self.auto_conditions)
+        self._persist_requirements_catalog()
         self.auto_req_id_var.set(f"req_{len(self.auto_conditions)+1}")
         self.auto_windows_var.set("")
         self._refresh_auto_condition_list()
@@ -2218,9 +2664,13 @@ class SchedulerDesktopApp:
         if not self.auto_condition_list.curselection():
             return
         idx = int(self.auto_condition_list.curselection()[0])
-        if idx >= len(self.auto_conditions):
+        if idx >= len(self.auto_condition_view_index):
             return
-        selected = self.auto_conditions[idx]
+        source, real_idx = self.auto_condition_view_index[idx]
+        if source != "IOP":
+            self.status_var.set("Status: EVAL requirements are read-only in this view")
+            return
+        selected = self.auto_conditions[real_idx]
         self.auto_req_id_var.set(selected["id"])
         self.auto_discipline_var.set(selected.get("discipline", self.auto_discipline_var.get()))
         self.auto_mode_var.set(selected.get("session_mode", self.auto_mode_var.get()))
@@ -2232,10 +2682,12 @@ class SchedulerDesktopApp:
         if not selection:
             raise ValueError("Select a requirement in the list first")
         idx = int(selection[0])
-        if idx >= len(self.auto_conditions):
+        if idx >= len(self.auto_condition_view_index):
             raise ValueError("Selected requirement is out of range")
-
-        existing = self.auto_conditions[idx]
+        source, real_idx = self.auto_condition_view_index[idx]
+        if source != "IOP":
+            raise ValueError("EVAL requirements are read-only in this list")
+        existing = self.auto_conditions[real_idx]
         updated = {
             **existing,
             "discipline": self.auto_discipline_var.get().strip(),
@@ -2246,8 +2698,8 @@ class SchedulerDesktopApp:
             "hard_constraint": bool(self.auto_hard_var.get()),
             "priority": int(self.auto_priority_var.get()),
         }
-        self.auto_conditions[idx] = validate_requirement(updated)
-        save_requirements_catalog(self.auto_conditions)
+        self.auto_conditions[real_idx] = validate_requirement(updated)
+        self._persist_requirements_catalog()
         self._refresh_auto_condition_list()
         self.status_var.set(f"Status: Updated requirement {updated['id']}")
 
@@ -2256,10 +2708,12 @@ class SchedulerDesktopApp:
         if not selection:
             raise ValueError("Select a requirement in the list first")
         idx = int(selection[0])
-        if idx >= len(self.auto_conditions):
+        if idx >= len(self.auto_condition_view_index):
             raise ValueError("Selected requirement is out of range")
-
-        source = dict(self.auto_conditions[idx])
+        source_program, real_idx = self.auto_condition_view_index[idx]
+        if source_program != "IOP":
+            raise ValueError("EVAL requirements are read-only in this list")
+        source = dict(self.auto_conditions[real_idx])
         base = source.get("id", "req") + "_copy"
         existing_ids = {c.get("id") for c in self.auto_conditions}
         new_id = base
@@ -2269,7 +2723,7 @@ class SchedulerDesktopApp:
             n += 1
         source["id"] = new_id
         self.auto_conditions.append(source)
-        save_requirements_catalog(self.auto_conditions)
+        self._persist_requirements_catalog()
         self._refresh_auto_condition_list()
         self.status_var.set(f"Status: Duplicated requirement as {new_id}")
 
@@ -2293,39 +2747,52 @@ class SchedulerDesktopApp:
         if not selection:
             raise ValueError("Select a requirement in the list first")
         idx = int(selection[0])
-        if idx >= len(self.auto_conditions):
+        if idx >= len(self.auto_condition_view_index):
             raise ValueError("Selected requirement is out of range")
-        rid = self.auto_conditions[idx]["id"]
-        self.auto_conditions.pop(idx)
-        save_requirements_catalog(self.auto_conditions)
+        source, real_idx = self.auto_condition_view_index[idx]
+        if source != "IOP":
+            raise ValueError("EVAL requirements are read-only in this list")
+        rid = self.auto_conditions[real_idx]["id"]
+        self.auto_conditions.pop(real_idx)
+        self._persist_requirements_catalog()
         self._refresh_auto_condition_list()
         self.status_var.set(f"Status: Removed requirement {rid}")
 
     def clear_auto_conditions(self) -> None:
         self.auto_conditions = []
-        save_requirements_catalog(self.auto_conditions)
+        self._persist_requirements_catalog()
         self._refresh_auto_condition_list()
         self.status_var.set("Status: Cleared all requirements")
 
     def _refresh_auto_condition_list(self) -> None:
         self.auto_condition_list.delete(0, self.tk.END)
-        if not self.auto_conditions:
+        self.auto_condition_view_index = []
+        if not self.auto_conditions and not (hasattr(self, "show_eval_requirements_var") and self.show_eval_requirements_var.get() and self.eval_conditions):
             self.auto_condition_list.insert(self.tk.END, "No conditions added yet.")
             return
 
         name_map = ["Mon", "Tue", "Wed", "Thu", "Fri"]
-        for idx, c in enumerate(self.auto_conditions, start=1):
+        display_rows: List[Tuple[str, Dict[str, Any], int]] = [("IOP", c, idx) for idx, c in enumerate(self.auto_conditions)]
+        if hasattr(self, "show_eval_requirements_var") and self.show_eval_requirements_var.get():
+            display_rows.extend(("EVAL", c, idx) for idx, c in enumerate(self.eval_conditions))
+
+        for disp_idx, (source_program, c, original_idx) in enumerate(display_rows, start=1):
             days = ",".join(name_map[d] for d in c["weekdays"])
             windows = "; ".join(f"{_to_ampm(w['start_minute'])}-{_to_ampm(w['end_minute'])}" for w in c["time_windows"])
             hard_soft = "hard" if c.get("hard_constraint", True) else "soft"
             provider_keys = c.get("provider_ids") or ([c.get("provider_id", "any")] if c.get("provider_id", "any") != "any" else ["any"])
             providers = [self._provider_display_name(p) if p != "any" else "any" for p in provider_keys]
             line = (
-                f"{idx}) {c['id']} | {c['discipline']} | providers={','.join(providers)} | room={c['room_id']} | "
+                f"{disp_idx}) [{source_program}] {c['id']} | {c['discipline']} | providers={','.join(providers)} | room={c['room_id']} | "
                 f"{c['session_mode']} {c['duration_minutes']}m x{c.get('sessions_per_week',1)}/wk | scope={c['patient_scope']} | days={days} | weeks={c['weeks']} | "
                 f"windows={windows} | {hard_soft} p={c.get('priority', 100)}"
             )
             self.auto_condition_list.insert(self.tk.END, line)
+            self.auto_condition_view_index.append((source_program, original_idx))
+            if source_program == "IOP":
+                self.auto_condition_list.itemconfig(self.auto_condition_list.size() - 1, foreground="#0b2d5c")
+            else:
+                self.auto_condition_list.itemconfig(self.auto_condition_list.size() - 1, foreground="#b00020")
 
     def _solver_limits_from_ui(self) -> Dict[str, int]:
         effort = self.auto_solver_effort_var.get().strip().lower()
@@ -2378,7 +2845,7 @@ class SchedulerDesktopApp:
                     "provider_id": assignment.get("provider_id"),
                     "room_id": assignment.get("room_id"),
                     "program_type": src.get("program_type", default_program_type),
-                    "soft_locked": bool(src.get("soft_locked", False)),
+                    "soft_locked": bool(src.get("soft_locked", True)),
                 }
             )
         profile = {
@@ -2402,7 +2869,9 @@ class SchedulerDesktopApp:
         result = generate_three_week_schedule(
             profile_template=profile_template,
             requirements=self.auto_conditions,
+            previous_assignments=self._existing_assignment_map(),
             solver_limits=self._solver_limits_from_ui(),
+            locked_request_ids=self._soft_locked_request_ids(),
         )
         self._push_manual_undo_snapshot("Generate IOP schedule")
         self._update_after_auto_generation(profile_template, result)
@@ -2481,19 +2950,6 @@ class SchedulerDesktopApp:
 
     def generate_eval_schedule(self) -> None:
         profile_template = self._build_auto_profile_template()
-        # ensure synthetic no-provider exists for eval group
-        provider_ids = {p.get("id") for p in profile_template.get("providers", [])}
-        if "NO_PROVIDER_EVAL_GROUP" not in provider_ids:
-            profile_template["providers"].append(
-                {
-                    "id": "NO_PROVIDER_EVAL_GROUP",
-                    "name": "EVAL Group (No Provider)",
-                    "disciplines": ["Evaluation Group"],
-                    "templates": [{"weekday": wd, "windows": [{"start_minute": GRID_START_MINUTE, "end_minute": GRID_END_MINUTE}]} for wd in range(5)],
-                    "exceptions": [],
-                    "allowed_rooms": ["Conference Room"],
-                }
-            )
         start = parse_date_parts(self.eval_start_year_var.get(), self.eval_start_month_var.get(), self.eval_start_day_var.get())
         result = generate_eval_schedule(
             profile_template=profile_template,
@@ -2502,7 +2958,6 @@ class SchedulerDesktopApp:
             eval_patient_count=int(self.eval_patient_count_var.get()),
             group_duration_minutes=int(self.eval_group_duration_var.get()),
             group_start_time=parse_time_input(self.eval_group_start_var.get()),
-            art_therapy_group=bool(self.eval_art_group_var.get()),
             previous_assignments=self._existing_assignment_map(),
             solver_limits=self._solver_limits_from_ui(),
             locked_request_ids=self._soft_locked_request_ids(),
@@ -2543,7 +2998,6 @@ class SchedulerDesktopApp:
             eval_patient_count=int(self.eval_patient_count_var.get()),
             group_duration_minutes=int(self.eval_group_duration_var.get()),
             group_start_time=parse_time_input(self.eval_group_start_var.get()),
-            art_therapy_group=bool(self.eval_art_group_var.get()),
             previous_assignments={**existing, **iop_result.get("assignments", {})},
             solver_limits=self._solver_limits_from_ui(),
             locked_request_ids=soft_locked_ids,

@@ -96,6 +96,49 @@ class SchedulerTests(unittest.TestCase):
         self.assertEqual(schedule["grp"].mode, Mode.GROUP)
         self.assertEqual(schedule["grp"].room_id, "gym")
 
+    def test_group_sessions_can_share_room_when_overlapping(self):
+        providers, patients, rooms = self._core_inputs()
+        requests = [
+            SessionRequest("g1", ("a", "b"), "pt", 60, Mode.GROUP, self.date_key, group_key="g1"),
+            SessionRequest("g2", ("c",), "pt", 60, Mode.GROUP, self.date_key, group_key="g2"),
+        ]
+        schedule = self.engine.generate_schedule(
+            date_key=self.date_key,
+            weekday=self.weekday,
+            requests=requests,
+            providers=providers,
+            patients=patients,
+            rooms=rooms,
+            day_window=TimeWindow(8 * 60, 12 * 60),
+        )
+        self.assertEqual(schedule["g1"].room_id, schedule["g2"].room_id)
+
+    def test_room_only_session_can_schedule_without_provider(self):
+        _, patients, rooms = self._core_inputs()
+        requests = [
+            SessionRequest(
+                "eval_group",
+                ("a", "b"),
+                "pt",
+                60,
+                Mode.GROUP,
+                self.date_key,
+                group_key="eval",
+                provider_id="NO_PROVIDER",
+                room_id="gym",
+            )
+        ]
+        schedule = self.engine.generate_schedule(
+            date_key=self.date_key,
+            weekday=self.weekday,
+            requests=requests,
+            providers=[],
+            patients=patients,
+            rooms=rooms,
+            day_window=TimeWindow(8 * 60, 12 * 60),
+        )
+        self.assertIsNone(schedule["eval_group"].provider_id)
+
     def test_reoptimization_prefers_minimal_changes(self):
         providers, patients, rooms = self._core_inputs()
         requests = [
@@ -210,6 +253,86 @@ class SchedulerTests(unittest.TestCase):
             max_candidates_per_request=10000,
         )
         self.assertIn("r1", schedule)
+
+    def test_previous_assignments_block_resources_across_programs(self):
+        providers, patients, rooms = self._core_inputs()
+        requests = [SessionRequest("r1", ("a",), "pt", 30, Mode.INDIVIDUAL, self.date_key)]
+        from app.scheduler import Assignment
+
+        previous = {
+            "existing_eval": Assignment(
+                request_id="existing_eval",
+                provider_id="pt",
+                room_id="gym",
+                start_minute=8 * 60,
+                end_minute=9 * 60,
+                label="existing",
+                mode=Mode.INDIVIDUAL,
+            )
+        }
+        schedule = self.engine.generate_schedule(
+            date_key=self.date_key,
+            weekday=self.weekday,
+            requests=requests,
+            providers=providers,
+            patients=patients,
+            rooms=rooms,
+            day_window=TimeWindow(8 * 60, 12 * 60),
+            previous_assignments=previous,
+        )
+        self.assertGreaterEqual(schedule["r1"].start_minute, 9 * 60)
+
+    def test_diagnostics_capture_constraint_failures(self):
+        providers, patients, rooms = self._core_inputs()
+        rooms[0].unavailable_weekly = {self.weekday: [TimeWindow(8 * 60, 12 * 60)]}
+        request = SessionRequest("r_blocked", ("a",), "pt", 30, Mode.INDIVIDUAL, self.date_key, room_id="gym")
+        with self.assertRaises(Exception):
+            self.engine.generate_schedule(
+                date_key=self.date_key,
+                weekday=self.weekday,
+                requests=[request],
+                providers=providers,
+                patients=patients,
+                rooms=rooms,
+                day_window=TimeWindow(8 * 60, 12 * 60),
+            )
+        self.assertTrue(any("constraint_failure" in d for d in self.engine.last_diagnostics))
+
+    def test_room_tier_soft_penalty_prefers_lower_tier(self):
+        providers, patients, rooms = self._core_inputs()
+        rooms[0].room_preference_tier = 3
+        rooms[2].room_preference_tier = 0
+        requests = [SessionRequest("r_pref", ("a",), "pt", 30, Mode.INDIVIDUAL, self.date_key)]
+        schedule = self.engine.generate_schedule(
+            date_key=self.date_key,
+            weekday=self.weekday,
+            requests=requests,
+            providers=providers,
+            patients=patients,
+            rooms=rooms,
+            day_window=TimeWindow(8 * 60, 12 * 60),
+        )
+        self.assertEqual(schedule["r_pref"].room_id, "flex")
+
+    def test_lunch_enforcement_requires_free_30_min_slot(self):
+        providers, patients, rooms = self._core_inputs()
+        providers[0].enforce_lunch_break = True
+        providers[0].lunch_earliest_start_minute = 8 * 60
+        providers[0].lunch_latest_start_minute = 8 * 60
+        requests = [
+            SessionRequest("r1", ("a",), "pt", 30, Mode.INDIVIDUAL, self.date_key),
+            SessionRequest("r2", ("b",), "pt", 30, Mode.INDIVIDUAL, self.date_key),
+        ]
+        with self.assertRaises(Exception):
+            self.engine.generate_schedule(
+                date_key=self.date_key,
+                weekday=self.weekday,
+                requests=requests,
+                providers=providers,
+                patients=patients,
+                rooms=rooms,
+                day_window=TimeWindow(8 * 60, 9 * 60),
+            )
 
 
 if __name__ == "__main__":

@@ -1,6 +1,13 @@
 import unittest
 
-from app.room_rules import normalize_room_rules, room_is_available, room_rule_violations
+from app.room_rules import (
+    is_room_discipline_compatible,
+    normalize_room_rules,
+    room_is_available,
+    room_preference_tier,
+    room_rule_violations,
+    with_default_eval_group_reservation,
+)
 
 
 class RoomRulesTests(unittest.TestCase):
@@ -34,6 +41,28 @@ class RoomRulesTests(unittest.TestCase):
         self.assertTrue(room_is_available(rules, room_id="Room 1", date_key="2026-03-09", weekday=0, start_minute=800, end_minute=830))
         violations = room_rule_violations(rules, room_id="Room 1", date_key="2026-03-09", weekday=0, start_minute=930, end_minute=960)
         self.assertIn("room_available_only_weekly", violations)
+
+    def test_default_eval_reservation_blocks_conference_room_mon_tue_morning(self):
+        rules = with_default_eval_group_reservation({"rooms": {"Conference Room": {}}})
+        self.assertFalse(
+            room_is_available(
+                rules,
+                room_id="Conference Room",
+                date_key="2026-03-09",
+                weekday=0,
+                start_minute=8 * 60 + 30,
+                end_minute=9 * 60,
+            )
+        )
+
+    def test_room_discipline_compatibility_and_tier(self):
+        rules = normalize_room_rules(
+            {"rooms": {"Room 1": {"allowed_disciplines": ["Physical Therapy"], "room_preference_tier": 2}}},
+            valid_rooms=["Room 1"],
+        )
+        self.assertTrue(is_room_discipline_compatible(rules, "Room 1", "Physical Therapy"))
+        self.assertFalse(is_room_discipline_compatible(rules, "Room 1", "Audiology"))
+        self.assertEqual(room_preference_tier(rules, "Room 1"), 2)
 
 
 if __name__ == "__main__":

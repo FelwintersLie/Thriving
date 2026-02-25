@@ -33,22 +33,29 @@ WEEKDAY_NAME_TO_INDEX = {
 
 
 DEFAULT_EVAL_TEMPLATE = [
-    {"discipline": "Physical Therapy", "duration_minutes": 75, "count": 1},
-    {"discipline": "Physical Therapy", "duration_minutes": 45, "count": 1},
-    {"discipline": "Speech-Language Pathology", "duration_minutes": 60, "count": 1},
-    {"discipline": "Speech-Language Pathology", "duration_minutes": 45, "count": 1},
+    {"discipline": "Art Therapy", "duration_minutes": 60, "count": 1},
     {"discipline": "Athletic Trainer", "duration_minutes": 60, "count": 1},
     {"discipline": "Audiology", "duration_minutes": 60, "count": 1},
-    {"discipline": "Dietician", "duration_minutes": 45, "count": 1},
-    {"discipline": "Nutrition", "duration_minutes": 45, "count": 1},
-    {"discipline": "Primary Care", "duration_minutes": 60, "count": 1},
-    {"discipline": "Pharmacology", "duration_minutes": 60, "count": 1},
     {"discipline": "Behavioral Health", "duration_minutes": 60, "count": 1},
     {"discipline": "Behavioral Health", "duration_minutes": 90, "count": 1},
-    {"discipline": "Psychiatry", "duration_minutes": 75, "count": 1},
+    {"discipline": "Dietician", "duration_minutes": 45, "count": 1},
     {"discipline": "Neuropsychology", "duration_minutes": 165, "count": 1},
-    {"discipline": "Art Therapy", "duration_minutes": 60, "count": 1},
+    {"discipline": "Nutrition", "duration_minutes": 45, "count": 1},
+    {"discipline": "Pharmacology", "duration_minutes": 60, "count": 1},
+    {"discipline": "Physical Therapy", "duration_minutes": 45, "count": 1},
+    {"discipline": "Physical Therapy", "duration_minutes": 75, "count": 1},
+    {"discipline": "Primary Care", "duration_minutes": 60, "count": 1},
+    {"discipline": "Psychiatry", "duration_minutes": 75, "count": 1},
+    {"discipline": "Speech-Language Pathology", "duration_minutes": 45, "count": 1},
+    {"discipline": "Speech-Language Pathology", "duration_minutes": 60, "count": 1},
 ]
+
+
+def _make_appointment_id(seed: str) -> str:
+    import hashlib
+
+    digest = hashlib.sha1(seed.encode("utf-8")).hexdigest()[:12]
+    return f"appt_{digest}"
 
 
 def planning_dates(start_monday: date, weeks: int = 3) -> List[str]:
@@ -253,7 +260,7 @@ def _solve_multiday(
         if not daily_requests:
             continue
         weekday = date.fromisoformat(date_key).weekday()
-        daily_previous = {rid: raw for rid, raw in previous_assignments.items() if rid in {r["id"] for r in daily_requests}}
+        daily_previous = {rid: raw for rid, raw in previous_assignments.items() if raw.get("date_key") == date_key}
 
         payload = {
             "date_key": date_key,
@@ -264,7 +271,7 @@ def _solve_multiday(
             "rooms": profile_template["rooms"],
             "requests": daily_requests,
             "previous_assignments": daily_previous,
-            "locked_request_ids": sorted(rid for rid in locked_request_ids if rid in {r["id"] for r in daily_requests}),
+            "locked_request_ids": sorted(rid for rid in locked_request_ids if rid in daily_previous),
             "max_backtrack_states": solver_limits.get("max_backtrack_states"),
             "max_candidates_per_request": solver_limits.get("max_candidates_per_request"),
         }
@@ -518,6 +525,7 @@ def build_eval_requests(
     requests.append(
         {
             "id": f"eval_group_{eval_dates[0]}",
+            "appointment_id": _make_appointment_id(f"eval_group|{eval_dates[0]}|{','.join(eval_patient_ids)}"),
             "patient_ids": list(eval_patient_ids),
             "discipline": "Evaluation Group",
             "duration_minutes": group_duration_minutes,
@@ -526,8 +534,10 @@ def build_eval_requests(
             "preferred_window": {"start_minute": group_start_time, "end_minute": group_start_time + group_duration_minutes},
             "group_key": f"eval_group_{eval_dates[0]}",
             "label": "EVAL Intake Group",
-            "provider_id": "NO_PROVIDER_EVAL_GROUP",
+            "provider_id": "NO_PROVIDER",
             "room_id": "Conference Room",
+            "program_type": "EVAL",
+            "soft_locked": False,
         }
     )
 
@@ -545,6 +555,7 @@ def build_eval_requests(
                 requests.append(
                     {
                         "id": f"eval_{patient_id}_{discipline}_{seq}_{date_key}",
+                        "appointment_id": _make_appointment_id(f"eval|{patient_id}|{discipline}|{seq}|{date_key}"),
                         "patient_ids": [patient_id],
                         "discipline": discipline,
                         "duration_minutes": int(sess["duration_minutes"]),
@@ -553,9 +564,63 @@ def build_eval_requests(
                         "preferred_window": {"start_minute": start_minute, "end_minute": 18 * 60},
                         "group_key": None,
                         "label": f"{discipline} ({patient_id})",
+                        "program_type": "EVAL",
+                        "soft_locked": False,
                     }
                 )
     return requests, eval_dates
+
+
+def generate_combined_schedule(
+    *,
+    profile_template: Dict[str, Any],
+    iop_requirements: List[Dict[str, Any]],
+    cohort_start: date,
+    cohort_type: str,
+    eval_patient_count: int,
+    group_duration_minutes: int,
+    group_start_time: int,
+    template_sessions: List[Dict[str, Any]] | None = None,
+    art_therapy_group: bool = False,
+    previous_assignments: Dict[str, Dict[str, Any]] | None = None,
+    solver_limits: Dict[str, int] | None = None,
+    locked_request_ids: List[str] | None = None,
+) -> Dict[str, Any]:
+    iop = generate_three_week_schedule(
+        profile_template=profile_template,
+        requirements=iop_requirements,
+        previous_assignments=previous_assignments,
+        solver_limits=solver_limits,
+        locked_request_ids=locked_request_ids,
+    )
+    eval_result = generate_eval_schedule(
+        profile_template=profile_template,
+        cohort_start=cohort_start,
+        cohort_type=cohort_type,
+        eval_patient_count=eval_patient_count,
+        group_duration_minutes=group_duration_minutes,
+        group_start_time=group_start_time,
+        template_sessions=template_sessions,
+        art_therapy_group=art_therapy_group,
+        previous_assignments={**(previous_assignments or {}), **iop.get("assignments", {})},
+        solver_limits=solver_limits,
+        locked_request_ids=locked_request_ids,
+    )
+    merged = {**iop.get("assignments", {}), **eval_result.get("assignments", {})}
+    return {
+        "ok": bool(iop.get("ok")) and bool(eval_result.get("ok")),
+        "assignments": merged,
+        "requests": list(iop.get("requests", [])) + list(eval_result.get("requests", [])),
+        "bottlenecks": list(iop.get("bottlenecks", [])) + list(eval_result.get("bottlenecks", [])),
+        "diff": diff_assignments(previous_assignments or {}, merged),
+        "move_report": {
+            "unchanged": iop.get("diff", {}).get("unchanged", 0) + eval_result.get("diff", {}).get("unchanged", 0),
+            "moved": iop.get("diff", {}).get("moved", 0) + eval_result.get("diff", {}).get("moved", 0),
+            "added": iop.get("diff", {}).get("added", 0) + eval_result.get("diff", {}).get("added", 0),
+            "removed": iop.get("diff", {}).get("removed", 0) + eval_result.get("diff", {}).get("removed", 0),
+            "reasons": [b.get("reason") for b in (list(iop.get("bottlenecks", [])) + list(eval_result.get("bottlenecks", [])))[:25]],
+        },
+    }
 
 
 def generate_eval_schedule(

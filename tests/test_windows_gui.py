@@ -30,11 +30,27 @@ class WindowsGuiHelperTests(unittest.TestCase):
         self.assertIn("Off-site", PREDEFINED_ROOMS)
         self.assertIn("Daniel Fenton", DEFAULT_PROVIDER_NAMES)
         self.assertIn("Devon Weist", DEFAULT_PROVIDER_NAMES)
+        self.assertIn("Elizabeth Lewis", DEFAULT_PROVIDER_NAMES)
 
     def test_build_room_records_uses_predefined_rooms(self):
         rooms = build_room_records()
         self.assertEqual(len(rooms), len(PREDEFINED_ROOMS))
         self.assertEqual(rooms[0]["id"], PREDEFINED_ROOMS[0])
+
+    def test_build_room_records_respects_room_rules_discipline_and_tier(self):
+        rooms = build_room_records(
+            {
+                "rooms": {
+                    "Room 1": {
+                        "allowed_disciplines": ["Physical Therapy"],
+                        "room_preference_tier": 2,
+                    }
+                }
+            }
+        )
+        room1 = next(r for r in rooms if r["id"] == "Room 1")
+        self.assertEqual(room1["allowed_disciplines"], ["Physical Therapy"])
+        self.assertEqual(room1["room_preference_tier"], 2)
 
     def test_build_provider_records_uses_names(self):
         providers = build_provider_records(["A", "B"], day_start=450, day_end=1080)
@@ -102,6 +118,23 @@ class WindowsGuiHelperTests(unittest.TestCase):
             day_end=1080,
         )
         self.assertEqual(records[0]["allowed_rooms"], ["Room 1"])
+
+    def test_build_provider_records_from_profiles_supports_multiple_disciplines(self):
+        records = build_provider_records_from_profiles(
+            [
+                {
+                    "provider_id": "p1",
+                    "provider_name": "Provider 1",
+                    "disciplines": ["Primary Care", "Physical Therapy"],
+                    "allowed_rooms": ["Room 1"],
+                    "availability_templates": [{"weekday": 0, "windows": [{"start_minute": 450, "end_minute": 510}]}],
+                    "exceptions": [],
+                }
+            ],
+            day_start=450,
+            day_end=1080,
+        )
+        self.assertEqual(records[0]["disciplines"], ["Physical Therapy", "Primary Care"])
 
     def test_build_provider_availability_preview_data_maps_windows(self):
         profile = {
