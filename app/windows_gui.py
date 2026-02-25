@@ -494,6 +494,14 @@ class SchedulerDesktopApp:
         top_wrap = ttk.Frame(manual_vertical_split)
         upper = ttk.Panedwindow(top_wrap, orient=tk.HORIZONTAL)
         upper.pack(fill=tk.BOTH, expand=True)
+
+        grid_wrap = ttk.Labelframe(manual_vertical_split, text="Patient Schedule Grid", padding=8)
+        manual_vertical_split.add(top_wrap, weight=1)
+        manual_vertical_split.add(grid_wrap, weight=2)
+        manual_vertical_split.paneconfigure(top_wrap, minsize=220)
+        manual_vertical_split.paneconfigure(grid_wrap, minsize=300)
+        self.root.after_idle(lambda: manual_vertical_split.sashpos(0, max(260, int(self.root.winfo_height() * 0.4))))
+        upper.pack(fill=tk.BOTH, expand=True)
         grid_wrap = ttk.Labelframe(manual_vertical_split, text="Patient Schedule Grid", padding=8)
         manual_vertical_split.add(top_wrap, weight=1)
         manual_vertical_split.add(grid_wrap, weight=2)
@@ -681,17 +689,38 @@ class SchedulerDesktopApp:
         self._build_provider_profiles_tab(provider_content)
         self._build_room_rules_tab(room_rules_content)
 
-        sizegrip = ttk.Sizegrip(main)
-        sizegrip.pack(side=tk.RIGHT, anchor="se", padx=(0, 4), pady=(0, 4))
-
-    def _build_auto_generator_tab(self, parent) -> None:
-        ttk = self.ttk
-        today = datetime.utcnow().date()
-        time_choices = military_time_choices()
-        weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
-
         iop_split = ttk.Panedwindow(parent, orient=self.tk.VERTICAL)
         iop_split.pack(fill="both", expand=True, padx=6, pady=6)
+
+        list_frame = ttk.Labelframe(iop_split, text="Requirement List", padding=10)
+        iop_split.add(list_frame, weight=2)
+
+        output_frame = ttk.Labelframe(iop_split, text="Generation Status / Bottleneck Report", padding=10)
+        iop_split.add(output_frame, weight=1)
+        iop_split.paneconfigure(list_frame, minsize=180)
+        iop_split.paneconfigure(output_frame, minsize=140)
+        self.root.after_idle(lambda: iop_split.sashpos(0, 240))
+        eval_split = ttk.Panedwindow(parent, orient=self.tk.VERTICAL)
+        eval_split.pack(fill="both", expand=True, padx=6, pady=(0, 6))
+
+        eval_list_frame = ttk.Labelframe(eval_split, text="EVAL Requirement List", padding=8)
+        eval_split.add(eval_list_frame, weight=2)
+        eval_scroll = ttk.Scrollbar(eval_list_frame, orient=self.tk.VERTICAL)
+        self.eval_requirement_list = self.tk.Listbox(eval_list_frame, height=7, yscrollcommand=eval_scroll.set)
+        eval_scroll.config(command=self.eval_requirement_list.yview)
+        self.eval_requirement_list.pack(side="left", fill="both", expand=True)
+        eval_scroll.pack(side="right", fill="y")
+        self.eval_requirement_list.insert(self.tk.END, "EVAL requirements are generated from default template sessions.")
+
+        report = ttk.Labelframe(eval_split, text="EVAL / Combined Report", padding=10)
+        eval_split.add(report, weight=1)
+        eval_split.paneconfigure(eval_list_frame, minsize=160)
+        eval_split.paneconfigure(report, minsize=140)
+        self.root.after_idle(lambda: eval_split.sashpos(0, 220))
+        self.eval_report_text = self.scrolledtext.ScrolledText(report, height=10, wrap=self.tk.WORD)
+        self.eval_report_text.pack(fill="both", expand=True)
+        self.eval_report_text.insert(self.tk.END, "No EVAL generation run yet.\n")
+        self.eval_report_text.configure(state=self.tk.DISABLED)
 
         list_frame = ttk.Labelframe(iop_split, text="Requirement List", padding=10)
         iop_split.add(list_frame, weight=2)
@@ -888,15 +917,28 @@ class SchedulerDesktopApp:
         self.eval_group_start_var = self.tk.StringVar(value="0830")
         self.eval_group_duration_var = self.tk.StringVar(value="60")
 
-        ttk.Label(frame, text="Cohort Start Year").grid(row=0, column=0, sticky="w")
-        ttk.Combobox(frame, textvariable=self.eval_start_year_var, values=self.year_choices if hasattr(self, "year_choices") else [str(datetime.utcnow().year)], state="readonly", width=8).grid(row=1, column=0, padx=2)
-        ttk.Label(frame, text="Month").grid(row=0, column=1, sticky="w")
-        ttk.Combobox(frame, textvariable=self.eval_start_month_var, values=[f"{m:02d}" for m in range(1, 13)], state="readonly", width=6).grid(row=1, column=1, padx=2)
-        ttk.Label(frame, text="Day").grid(row=0, column=2, sticky="w")
-        ttk.Combobox(frame, textvariable=self.eval_start_day_var, values=[f"{d:02d}" for d in range(1, 32)], state="readonly", width=6).grid(row=1, column=2, padx=2)
+        right.columnconfigure(1, weight=1)
+        right.rowconfigure(2, weight=1)
 
-        ttk.Label(frame, text="Cohort Type").grid(row=0, column=3, sticky="w")
-        ttk.Combobox(frame, textvariable=self.eval_cohort_var, values=["Mon-Wed", "Tue-Thu"], state="readonly", width=10).grid(row=1, column=3, padx=2)
+        weekly_dates_split = ttk.Panedwindow(right, orient=tk.VERTICAL)
+        weekly_dates_split.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(8, 0))
+
+        weekly = ttk.Labelframe(weekly_dates_split, text="Weekly rules", padding=6)
+        weekly_dates_split.add(weekly, weight=2)
+        self.room_weekly_rules_list.grid(row=1, column=0, columnspan=6, sticky="nsew", pady=(4, 0))
+        weekly.rowconfigure(1, weight=1)
+        weekly.columnconfigure(0, weight=1)
+        dates = ttk.Labelframe(weekly_dates_split, text="Date-specific exceptions", padding=6)
+        weekly_dates_split.add(dates, weight=1)
+        weekly_dates_split.paneconfigure(weekly, minsize=160)
+        weekly_dates_split.paneconfigure(dates, minsize=120)
+        self.root.after_idle(lambda: weekly_dates_split.sashpos(0, 210))
+        self.room_date_rules_list.grid(row=1, column=0, columnspan=6, sticky="nsew", pady=(4, 0))
+        dates.rowconfigure(1, weight=1)
+        dates.columnconfigure(0, weight=1)
+
+        self.room_rules_preview_canvas.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        btns.grid(row=4, column=0, columnspan=2, sticky="w", pady=(8, 0))
         ttk.Label(frame, text="EVAL Patients").grid(row=0, column=4, sticky="w")
         ttk.Combobox(frame, textvariable=self.eval_patient_count_var, values=[str(i) for i in range(1, 11)], state="readonly", width=8).grid(row=1, column=4, padx=2)
 
