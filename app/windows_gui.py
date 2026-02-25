@@ -515,6 +515,32 @@ class SchedulerDesktopApp:
             self.profile_var.set("Profile: restored from data/last_profile.json")
             self._refresh_profile_preview()
 
+    def _make_scrollable_tab(self, notebook) -> Any:
+        tk = self.tk
+        ttk = self.ttk
+        outer = ttk.Frame(notebook)
+        canvas = tk.Canvas(outer, highlightthickness=0)
+        vscroll = ttk.Scrollbar(outer, orient=tk.VERTICAL, command=canvas.yview)
+        hscroll = ttk.Scrollbar(outer, orient=tk.HORIZONTAL, command=canvas.xview)
+        canvas.configure(yscrollcommand=vscroll.set, xscrollcommand=hscroll.set)
+
+        canvas.grid(row=0, column=0, sticky="nsew")
+        vscroll.grid(row=0, column=1, sticky="ns")
+        hscroll.grid(row=1, column=0, sticky="ew")
+        outer.rowconfigure(0, weight=1)
+        outer.columnconfigure(0, weight=1)
+
+        content = ttk.Frame(canvas)
+        window_id = canvas.create_window((0, 0), window=content, anchor="nw")
+
+        def _sync_scrollregion(_event=None):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        content.bind("<Configure>", _sync_scrollregion)
+        setattr(outer, "_scroll_canvas", canvas)
+        setattr(outer, "_scroll_content", content)
+        return outer
+
     def _build_layout(self) -> None:
         tk = self.tk
         ttk = self.ttk
@@ -548,23 +574,28 @@ class SchedulerDesktopApp:
         notebook.pack(fill=tk.BOTH, expand=True, pady=(8, 8))
         self.main_notebook = notebook
 
-        manual_tab = ttk.Frame(notebook)
+        manual_tab = self._make_scrollable_tab(notebook)
         self.manual_tab = manual_tab
         notebook.add(manual_tab, text="Manual Scheduler")
+        manual_content = getattr(manual_tab, "_scroll_content")
 
-        auto_tab = ttk.Frame(notebook)
+        auto_tab = self._make_scrollable_tab(notebook)
         notebook.add(auto_tab, text="IOP Generator (3-week)")
+        auto_content = getattr(auto_tab, "_scroll_content")
 
-        eval_tab = ttk.Frame(notebook)
+        eval_tab = self._make_scrollable_tab(notebook)
         notebook.add(eval_tab, text="EVAL Generator")
+        eval_content = getattr(eval_tab, "_scroll_content")
 
-        provider_tab = ttk.Frame(notebook)
+        provider_tab = self._make_scrollable_tab(notebook)
         notebook.add(provider_tab, text="Provider Profiles")
+        provider_content = getattr(provider_tab, "_scroll_content")
 
-        room_rules_tab = ttk.Frame(notebook)
+        room_rules_tab = self._make_scrollable_tab(notebook)
         notebook.add(room_rules_tab, text="Room Rules")
+        room_rules_content = getattr(room_rules_tab, "_scroll_content")
 
-        upper = ttk.Panedwindow(manual_tab, orient=tk.HORIZONTAL)
+        upper = ttk.Panedwindow(manual_content, orient=tk.HORIZONTAL)
         upper.pack(fill=tk.BOTH, expand=True, pady=(0, 8))
 
         form_wrap = ttk.Labelframe(upper, text="Inputs", padding=8)
@@ -578,7 +609,7 @@ class SchedulerDesktopApp:
         self.summary_text.insert(tk.END, "Create or load a profile to begin.\n")
         self.summary_text.configure(state=tk.DISABLED)
 
-        grid_wrap = ttk.Labelframe(manual_tab, text="Patient Schedule Grid", padding=8)
+        grid_wrap = ttk.Labelframe(manual_content, text="Patient Schedule Grid", padding=8)
         grid_wrap.pack(fill=tk.BOTH, expand=True)
 
         grid_container = ttk.Frame(grid_wrap)
@@ -603,9 +634,9 @@ class SchedulerDesktopApp:
         ttk.Button(arrow_frame, text="▼", width=3, command=lambda: self.grid_canvas.yview_scroll(6, "units")).pack(pady=4)
 
         self.legend_var = tk.StringVar(value="Legend: Add appointments to visualize schedule.")
-        ttk.Label(manual_tab, textvariable=self.legend_var).pack(anchor="w", pady=(6, 0))
+        ttk.Label(manual_content, textvariable=self.legend_var).pack(anchor="w", pady=(6, 0))
 
-        view_controls = ttk.Frame(manual_tab)
+        view_controls = ttk.Frame(manual_content)
         view_controls.pack(fill=tk.X, pady=(4, 0))
         self.grid_mode_var = tk.StringVar(value="Patient Grid")
         self.program_filter_var = tk.StringVar(value="Both")
@@ -617,10 +648,13 @@ class SchedulerDesktopApp:
         ttk.Button(view_controls, text="Export Schedule as PNG", command=lambda: self._safe_action(self.export_view_as_png)).pack(side="left", padx=6)
         ttk.Button(view_controls, text="Export as PowerPoint", command=lambda: self._safe_action(self.export_view_as_pptx)).pack(side="left", padx=6)
 
-        self._build_auto_generator_tab(auto_tab)
-        self._build_eval_generator_tab(eval_tab)
-        self._build_provider_profiles_tab(provider_tab)
-        self._build_room_rules_tab(room_rules_tab)
+        self._build_auto_generator_tab(auto_content)
+        self._build_eval_generator_tab(eval_content)
+        self._build_provider_profiles_tab(provider_content)
+        self._build_room_rules_tab(room_rules_content)
+
+        sizegrip = ttk.Sizegrip(main)
+        sizegrip.pack(side=tk.RIGHT, anchor="se", padx=(0, 4), pady=(0, 4))
 
     def _build_auto_generator_tab(self, parent) -> None:
         ttk = self.ttk
