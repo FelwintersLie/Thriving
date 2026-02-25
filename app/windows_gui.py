@@ -607,8 +607,12 @@ class SchedulerDesktopApp:
         notebook.add(room_rules_tab, text="Room Rules")
         room_rules_content = getattr(room_rules_tab, "_scroll_content")
 
-        upper = ttk.Panedwindow(manual_content, orient=tk.HORIZONTAL)
-        upper.pack(fill=tk.BOTH, expand=True, pady=(0, 8))
+        manual_split = ttk.Panedwindow(manual_content, orient=tk.VERTICAL)
+        manual_split.pack(fill=tk.BOTH, expand=True, pady=(0, 8))
+
+        top_wrap = ttk.Frame(manual_split)
+        upper = ttk.Panedwindow(top_wrap, orient=tk.HORIZONTAL)
+        upper.pack(fill=tk.BOTH, expand=True)
 
         form_wrap = ttk.Labelframe(upper, text="Inputs", padding=8)
         upper.add(form_wrap, weight=2)
@@ -621,8 +625,9 @@ class SchedulerDesktopApp:
         self.summary_text.insert(tk.END, "Create or load a profile to begin.\n")
         self.summary_text.configure(state=tk.DISABLED)
 
-        grid_wrap = ttk.Labelframe(manual_content, text="Patient Schedule Grid", padding=8)
-        grid_wrap.pack(fill=tk.BOTH, expand=True)
+        grid_wrap = ttk.Labelframe(manual_split, text="Patient Schedule Grid", padding=8)
+        manual_split.add(top_wrap, weight=1)
+        manual_split.add(grid_wrap, weight=2)
 
         grid_container = ttk.Frame(grid_wrap)
         grid_container.pack(fill=tk.BOTH, expand=True)
@@ -805,8 +810,11 @@ class SchedulerDesktopApp:
         ttk.Button(action_row, text="Remove Selected Requirement", command=lambda: self._safe_action(self.remove_selected_condition)).pack(side="left", padx=4)
         ttk.Button(action_row, text="Clear Requirements", command=lambda: self._safe_action(self.clear_auto_conditions)).pack(side="left", padx=4)
 
-        list_frame = ttk.Labelframe(parent, text="Requirement List", padding=10)
-        list_frame.pack(fill="both", expand=True, padx=6, pady=6)
+        list_report_split = ttk.Panedwindow(parent, orient=self.tk.VERTICAL)
+        list_report_split.pack(fill="both", expand=True, padx=6, pady=6)
+
+        list_frame = ttk.Labelframe(list_report_split, text="Requirement List", padding=10)
+        list_report_split.add(list_frame, weight=2)
 
         list_scroll = ttk.Scrollbar(list_frame, orient=self.tk.VERTICAL)
         self.auto_condition_list = self.tk.Listbox(list_frame, height=10, yscrollcommand=list_scroll.set)
@@ -816,8 +824,8 @@ class SchedulerDesktopApp:
         self.auto_condition_list.bind("<<ListboxSelect>>", self._on_requirement_select)
         self.auto_condition_view_index: List[Tuple[str, int]] = []
 
-        output_frame = ttk.Labelframe(parent, text="Generation Status / Bottleneck Report", padding=10)
-        output_frame.pack(fill="both", expand=True, padx=6, pady=6)
+        output_frame = ttk.Labelframe(list_report_split, text="Generation Status / Bottleneck Report", padding=10)
+        list_report_split.add(output_frame, weight=1)
         self.auto_report_text = self.scrolledtext.ScrolledText(output_frame, height=8, wrap=self.tk.WORD)
         self.auto_report_text.pack(fill="both", expand=True)
         self.auto_report_text.insert(self.tk.END, "No report yet.\n")
@@ -924,8 +932,11 @@ class SchedulerDesktopApp:
         ttk.Button(eval_row, text="Edit Selected", command=lambda: self._safe_action(self.edit_selected_eval_condition)).pack(side="left", padx=4)
         ttk.Button(eval_row, text="Remove Selected Requirement", command=lambda: self._safe_action(self.remove_selected_eval_condition)).pack(side="left", padx=4)
 
-        eval_list_frame = ttk.Labelframe(parent, text="EVAL Requirement List", padding=8)
-        eval_list_frame.pack(fill="both", expand=True, padx=6, pady=(0, 6))
+        eval_list_report_split = ttk.Panedwindow(parent, orient=self.tk.VERTICAL)
+        eval_list_report_split.pack(fill="both", expand=True, padx=6, pady=(0, 6))
+
+        eval_list_frame = ttk.Labelframe(eval_list_report_split, text="EVAL Requirement List", padding=8)
+        eval_list_report_split.add(eval_list_frame, weight=2)
         eval_scroll = ttk.Scrollbar(eval_list_frame, orient=self.tk.VERTICAL)
         self.eval_condition_list = self.tk.Listbox(eval_list_frame, height=7, yscrollcommand=eval_scroll.set)
         eval_scroll.config(command=self.eval_condition_list.yview)
@@ -940,8 +951,8 @@ class SchedulerDesktopApp:
         ttk.Button(actions, text="Generate Combined Schedule", command=lambda: self._safe_action(self.generate_combined_schedule)).pack(side="left", padx=4)
         ttk.Button(actions, text="Import Existing Schedule JSON", command=lambda: self._safe_action(self.import_existing_schedule_json)).pack(side="left", padx=4)
 
-        report = ttk.Labelframe(parent, text="EVAL / Combined Report", padding=10)
-        report.pack(fill="both", expand=True, padx=6, pady=6)
+        report = ttk.Labelframe(eval_list_report_split, text="EVAL / Combined Report", padding=10)
+        eval_list_report_split.add(report, weight=1)
         self.eval_report_text = self.scrolledtext.ScrolledText(report, height=10, wrap=self.tk.WORD)
         self.eval_report_text.pack(fill="both", expand=True)
         self.eval_report_text.insert(self.tk.END, "No EVAL generation run yet.\n")
@@ -1120,6 +1131,8 @@ class SchedulerDesktopApp:
 
         ttk.Label(right_content, text="Room").grid(row=0, column=0, sticky="w")
         ttk.Entry(right_content, textvariable=self.room_rule_selected_var, state="readonly", width=24).grid(row=0, column=1, sticky="w", padx=4)
+        right_content.columnconfigure(1, weight=1)
+        right_content.rowconfigure(3, weight=1)
 
         ttk.Label(right_content, text="Allowed Disciplines").grid(row=1, column=0, sticky="nw")
         disciplines_frame = ttk.Frame(right_content)
@@ -1139,8 +1152,11 @@ class SchedulerDesktopApp:
         self.room_rule_end_var = tk.StringVar(value="1300")
         self.room_rule_type_var = tk.StringVar(value="unavailable")
 
-        weekly = ttk.Labelframe(right_content, text="Weekly rules", padding=6)
-        weekly.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        weekly_dates_split = ttk.Panedwindow(right_content, orient=tk.VERTICAL)
+        weekly_dates_split.grid(row=3, column=0, columnspan=2, sticky="nsew", pady=(8, 0))
+
+        weekly = ttk.Labelframe(weekly_dates_split, text="Weekly rules", padding=6)
+        weekly_dates_split.add(weekly, weight=2)
         ttk.Combobox(weekly, textvariable=self.room_rule_weekday_var, values=weekdays, state="readonly", width=12).grid(row=0, column=0, padx=2)
         ttk.Combobox(weekly, textvariable=self.room_rule_start_var, values=time_choices, state="readonly", width=10).grid(row=0, column=1, padx=2)
         ttk.Combobox(weekly, textvariable=self.room_rule_end_var, values=time_choices, state="readonly", width=10).grid(row=0, column=2, padx=2)
@@ -1148,15 +1164,17 @@ class SchedulerDesktopApp:
         ttk.Button(weekly, text="Add Window", command=lambda: self._safe_action(self.add_room_weekly_rule)).grid(row=0, column=4, padx=4)
         ttk.Button(weekly, text="Remove Window", command=lambda: self._safe_action(self.remove_room_weekly_rule)).grid(row=0, column=5, padx=4)
         self.room_weekly_rules_list = tk.Listbox(weekly, height=6)
-        self.room_weekly_rules_list.grid(row=1, column=0, columnspan=6, sticky="ew", pady=(4, 0))
+        self.room_weekly_rules_list.grid(row=1, column=0, columnspan=6, sticky="nsew", pady=(4, 0))
+        weekly.rowconfigure(1, weight=1)
+        weekly.columnconfigure(0, weight=1)
 
         self.room_rule_date_var = tk.StringVar(value=date_to_key(datetime.utcnow().date()))
         self.room_rule_date_start_var = tk.StringVar(value="1100")
         self.room_rule_date_end_var = tk.StringVar(value="1300")
         self.room_rule_date_type_var = tk.StringVar(value="unavailable")
 
-        dates = ttk.Labelframe(right_content, text="Date-specific exceptions", padding=6)
-        dates.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        dates = ttk.Labelframe(weekly_dates_split, text="Date-specific exceptions", padding=6)
+        weekly_dates_split.add(dates, weight=1)
         ttk.Entry(dates, textvariable=self.room_rule_date_var, width=12).grid(row=0, column=0, padx=2)
         ttk.Combobox(dates, textvariable=self.room_rule_date_start_var, values=time_choices, state="readonly", width=10).grid(row=0, column=1, padx=2)
         ttk.Combobox(dates, textvariable=self.room_rule_date_end_var, values=time_choices, state="readonly", width=10).grid(row=0, column=2, padx=2)
@@ -1167,10 +1185,10 @@ class SchedulerDesktopApp:
         self.room_date_rules_list.grid(row=1, column=0, columnspan=6, sticky="ew", pady=(4, 0))
 
         self.room_rules_preview_canvas = tk.Canvas(right_content, height=180, bg="white", highlightthickness=1, highlightbackground="#ced4da")
-        self.room_rules_preview_canvas.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        self.room_rules_preview_canvas.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(8, 0))
 
         btns = ttk.Frame(right_content)
-        btns.grid(row=6, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        btns.grid(row=5, column=0, columnspan=2, sticky="w", pady=(8, 0))
         ttk.Button(btns, text="Save/Update", command=lambda: self._safe_action(self.save_room_rules)).pack(side="left", padx=4)
         ttk.Button(btns, text="Save Discipline Matrix", command=lambda: self._safe_action(self.save_room_discipline_matrix_profile)).pack(side="left", padx=4)
         ttk.Button(btns, text="Revert", command=lambda: self._safe_action(self.revert_room_rules_editor)).pack(side="left", padx=4)
