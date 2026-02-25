@@ -628,6 +628,9 @@ class SchedulerDesktopApp:
         grid_wrap = ttk.Labelframe(manual_split, text="Patient Schedule Grid", padding=8)
         manual_split.add(top_wrap, weight=1)
         manual_split.add(grid_wrap, weight=2)
+        manual_split.paneconfigure(top_wrap, minsize=240)
+        manual_split.paneconfigure(grid_wrap, minsize=320)
+        self.root.after_idle(lambda: manual_split.sashpos(0, max(260, int(self.root.winfo_height() * 0.38))))
 
         grid_container = ttk.Frame(grid_wrap)
         grid_container.pack(fill=tk.BOTH, expand=True)
@@ -826,6 +829,9 @@ class SchedulerDesktopApp:
 
         output_frame = ttk.Labelframe(list_report_split, text="Generation Status / Bottleneck Report", padding=10)
         list_report_split.add(output_frame, weight=1)
+        list_report_split.paneconfigure(list_frame, minsize=180)
+        list_report_split.paneconfigure(output_frame, minsize=140)
+        self.root.after_idle(lambda: list_report_split.sashpos(0, 240))
         self.auto_report_text = self.scrolledtext.ScrolledText(output_frame, height=8, wrap=self.tk.WORD)
         self.auto_report_text.pack(fill="both", expand=True)
         self.auto_report_text.insert(self.tk.END, "No report yet.\n")
@@ -953,6 +959,9 @@ class SchedulerDesktopApp:
 
         report = ttk.Labelframe(eval_list_report_split, text="EVAL / Combined Report", padding=10)
         eval_list_report_split.add(report, weight=1)
+        eval_list_report_split.paneconfigure(eval_list_frame, minsize=160)
+        eval_list_report_split.paneconfigure(report, minsize=140)
+        self.root.after_idle(lambda: eval_list_report_split.sashpos(0, 230))
         self.eval_report_text = self.scrolledtext.ScrolledText(report, height=10, wrap=self.tk.WORD)
         self.eval_report_text.pack(fill="both", expand=True)
         self.eval_report_text.insert(self.tk.END, "No EVAL generation run yet.\n")
@@ -1175,6 +1184,9 @@ class SchedulerDesktopApp:
 
         dates = ttk.Labelframe(weekly_dates_split, text="Date-specific exceptions", padding=6)
         weekly_dates_split.add(dates, weight=1)
+        weekly_dates_split.paneconfigure(weekly, minsize=160)
+        weekly_dates_split.paneconfigure(dates, minsize=120)
+        self.root.after_idle(lambda: weekly_dates_split.sashpos(0, 210))
         ttk.Entry(dates, textvariable=self.room_rule_date_var, width=12).grid(row=0, column=0, padx=2)
         ttk.Combobox(dates, textvariable=self.room_rule_date_start_var, values=time_choices, state="readonly", width=10).grid(row=0, column=1, padx=2)
         ttk.Combobox(dates, textvariable=self.room_rule_date_end_var, values=time_choices, state="readonly", width=10).grid(row=0, column=2, padx=2)
@@ -1182,7 +1194,9 @@ class SchedulerDesktopApp:
         ttk.Button(dates, text="Add Exception", command=lambda: self._safe_action(self.add_room_date_rule)).grid(row=0, column=4, padx=4)
         ttk.Button(dates, text="Remove Exception", command=lambda: self._safe_action(self.remove_room_date_rule)).grid(row=0, column=5, padx=4)
         self.room_date_rules_list = tk.Listbox(dates, height=6)
-        self.room_date_rules_list.grid(row=1, column=0, columnspan=6, sticky="ew", pady=(4, 0))
+        self.room_date_rules_list.grid(row=1, column=0, columnspan=6, sticky="nsew", pady=(4, 0))
+        dates.rowconfigure(1, weight=1)
+        dates.columnconfigure(0, weight=1)
 
         self.room_rules_preview_canvas = tk.Canvas(right_content, height=180, bg="white", highlightthickness=1, highlightbackground="#ced4da")
         self.room_rules_preview_canvas.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(8, 0))
