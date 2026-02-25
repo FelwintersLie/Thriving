@@ -515,44 +515,24 @@ class SchedulerDesktopApp:
             self.profile_var.set("Profile: restored from data/last_profile.json")
             self._refresh_profile_preview()
 
-    def _make_scrollable_container(self, parent) -> Tuple[Any, Any]:
+    def _make_scrollable_container(self, parent, *, horizontal: bool = False) -> Tuple[Any, Any, Any]:
         tk = self.tk
         ttk = self.ttk
         outer = ttk.Frame(parent)
         canvas = tk.Canvas(outer, highlightthickness=0)
         vscroll = ttk.Scrollbar(outer, orient=tk.VERTICAL, command=canvas.yview)
-        hscroll = ttk.Scrollbar(outer, orient=tk.HORIZONTAL, command=canvas.xview)
-        canvas.configure(yscrollcommand=vscroll.set, xscrollcommand=hscroll.set)
+        canvas.configure(yscrollcommand=vscroll.set)
 
         canvas.grid(row=0, column=0, sticky="nsew")
         vscroll.grid(row=0, column=1, sticky="ns")
-        hscroll.grid(row=1, column=0, sticky="ew")
         outer.rowconfigure(0, weight=1)
         outer.columnconfigure(0, weight=1)
 
-        content = ttk.Frame(canvas)
-        canvas.create_window((0, 0), window=content, anchor="nw")
-
-        def _sync_scrollregion(_event=None):
-            canvas.configure(scrollregion=canvas.bbox("all"))
-
-        content.bind("<Configure>", _sync_scrollregion)
-        return outer, content
-
-    def _make_scrollable_tab(self, notebook) -> Any:
-        tk = self.tk
-        ttk = self.ttk
-        outer = ttk.Frame(notebook)
-        canvas = tk.Canvas(outer, highlightthickness=0)
-        vscroll = ttk.Scrollbar(outer, orient=tk.VERTICAL, command=canvas.yview)
-        hscroll = ttk.Scrollbar(outer, orient=tk.HORIZONTAL, command=canvas.xview)
-        canvas.configure(yscrollcommand=vscroll.set, xscrollcommand=hscroll.set)
-
-        canvas.grid(row=0, column=0, sticky="nsew")
-        vscroll.grid(row=0, column=1, sticky="ns")
-        hscroll.grid(row=1, column=0, sticky="ew")
-        outer.rowconfigure(0, weight=1)
-        outer.columnconfigure(0, weight=1)
+        xscroll = None
+        if horizontal:
+            xscroll = ttk.Scrollbar(outer, orient=tk.HORIZONTAL, command=canvas.xview)
+            xscroll.grid(row=1, column=0, sticky="ew")
+            canvas.configure(xscrollcommand=xscroll.set)
 
         content = ttk.Frame(canvas)
         window_id = canvas.create_window((0, 0), window=content, anchor="nw")
@@ -560,7 +540,15 @@ class SchedulerDesktopApp:
         def _sync_scrollregion(_event=None):
             canvas.configure(scrollregion=canvas.bbox("all"))
 
+        def _sync_width(event):
+            canvas.itemconfigure(window_id, width=event.width)
+
         content.bind("<Configure>", _sync_scrollregion)
+        canvas.bind("<Configure>", _sync_width)
+        return outer, content, canvas
+
+    def _make_scrollable_tab(self, notebook, *, horizontal: bool = False) -> Any:
+        outer, content, canvas = self._make_scrollable_container(notebook, horizontal=horizontal)
         setattr(outer, "_scroll_canvas", canvas)
         setattr(outer, "_scroll_content", content)
         return outer
@@ -598,24 +586,24 @@ class SchedulerDesktopApp:
         notebook.pack(fill=tk.BOTH, expand=True, pady=(8, 8))
         self.main_notebook = notebook
 
-        manual_tab = self._make_scrollable_tab(notebook)
+        manual_tab = self._make_scrollable_tab(notebook, horizontal=False)
         self.manual_tab = manual_tab
         notebook.add(manual_tab, text="Manual Scheduler")
         manual_content = getattr(manual_tab, "_scroll_content")
 
-        auto_tab = self._make_scrollable_tab(notebook)
+        auto_tab = self._make_scrollable_tab(notebook, horizontal=False)
         notebook.add(auto_tab, text="IOP Generator (3-week)")
         auto_content = getattr(auto_tab, "_scroll_content")
 
-        eval_tab = self._make_scrollable_tab(notebook)
+        eval_tab = self._make_scrollable_tab(notebook, horizontal=False)
         notebook.add(eval_tab, text="EVAL Generator")
         eval_content = getattr(eval_tab, "_scroll_content")
 
-        provider_tab = self._make_scrollable_tab(notebook)
+        provider_tab = self._make_scrollable_tab(notebook, horizontal=False)
         notebook.add(provider_tab, text="Provider Profiles")
         provider_content = getattr(provider_tab, "_scroll_content")
 
-        room_rules_tab = self._make_scrollable_tab(notebook)
+        room_rules_tab = self._make_scrollable_tab(notebook, horizontal=False)
         notebook.add(room_rules_tab, text="Room Rules")
         room_rules_content = getattr(room_rules_tab, "_scroll_content")
 
@@ -976,7 +964,7 @@ class SchedulerDesktopApp:
         split.add(left, weight=1)
         split.add(right, weight=3)
 
-        right_wrap, right_content = self._make_scrollable_container(right)
+        right_wrap, right_content, _ = self._make_scrollable_container(right, horizontal=False)
         right_wrap.pack(fill="both", expand=True)
 
         self.provider_search_var = tk.StringVar(value="")
@@ -1072,7 +1060,7 @@ class SchedulerDesktopApp:
         ttk.Combobox(lunch, textvariable=self.provider_lunch_latest_var, values=time_choices, state="readonly", width=10).grid(row=2, column=1, padx=2)
         row += 1
 
-        self.provider_profile_preview_canvas = tk.Canvas(right_content, width=620, height=180, bg="white", highlightthickness=1, highlightbackground="#ced4da")
+        self.provider_profile_preview_canvas = tk.Canvas(right_content, height=180, bg="white", highlightthickness=1, highlightbackground="#ced4da")
         self.provider_profile_preview_canvas.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         row += 1
 
@@ -1103,7 +1091,7 @@ class SchedulerDesktopApp:
         split.add(left, weight=1)
         split.add(right, weight=3)
 
-        right_wrap, right_content = self._make_scrollable_container(right)
+        right_wrap, right_content, _ = self._make_scrollable_container(right, horizontal=False)
         right_wrap.pack(fill="both", expand=True)
 
         room_list_wrap = ttk.Frame(left)
@@ -1178,7 +1166,7 @@ class SchedulerDesktopApp:
         self.room_date_rules_list = tk.Listbox(dates, height=6)
         self.room_date_rules_list.grid(row=1, column=0, columnspan=6, sticky="ew", pady=(4, 0))
 
-        self.room_rules_preview_canvas = tk.Canvas(right_content, width=620, height=180, bg="white", highlightthickness=1, highlightbackground="#ced4da")
+        self.room_rules_preview_canvas = tk.Canvas(right_content, height=180, bg="white", highlightthickness=1, highlightbackground="#ced4da")
         self.room_rules_preview_canvas.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(8, 0))
 
         btns = ttk.Frame(right_content)
@@ -1244,7 +1232,7 @@ class SchedulerDesktopApp:
         ttk.Button(provider_frame, text="Set Availability Window", command=lambda: self._safe_action(self.set_provider_availability_window)).grid(row=3, column=3, padx=4)
         self.provider_manage_combo.bind("<<ComboboxSelected>>", lambda _e: self._safe_action(self.render_provider_availability_preview))
 
-        self.provider_preview_canvas = self.tk.Canvas(provider_frame, width=620, height=160, bg="white", highlightthickness=1, highlightbackground="#ced4da")
+        self.provider_preview_canvas = self.tk.Canvas(provider_frame, height=160, bg="white", highlightthickness=1, highlightbackground="#ced4da")
         self.provider_preview_canvas.grid(row=4, column=0, columnspan=4, pady=(8, 0), sticky="ew")
 
         appt = ttk.Labelframe(parent, text="Add Appointment", padding=6)
