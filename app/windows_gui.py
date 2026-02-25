@@ -516,9 +516,16 @@ class SchedulerDesktopApp:
             self._refresh_profile_preview()
 
     def _make_scrollable_tab(self, notebook) -> Any:
+        outer, canvas, content = self._make_scrollable_region(notebook)
+        setattr(outer, "_scroll_canvas", canvas)
+        setattr(outer, "_scroll_content", content)
+        return outer
+
+    def _make_scrollable_region(self, parent):
         tk = self.tk
         ttk = self.ttk
-        outer = ttk.Frame(notebook)
+
+        outer = ttk.Frame(parent)
         canvas = tk.Canvas(outer, highlightthickness=0)
         vscroll = ttk.Scrollbar(outer, orient=tk.VERTICAL, command=canvas.yview)
         hscroll = ttk.Scrollbar(outer, orient=tk.HORIZONTAL, command=canvas.xview)
@@ -536,10 +543,18 @@ class SchedulerDesktopApp:
         def _sync_scrollregion(_event=None):
             canvas.configure(scrollregion=canvas.bbox("all"))
 
-        content.bind("<Configure>", _sync_scrollregion)
-        setattr(outer, "_scroll_canvas", canvas)
-        setattr(outer, "_scroll_content", content)
-        return outer
+        def _sync_window_to_canvas(event=None):
+            viewport_w = event.width if event else canvas.winfo_width()
+            viewport_h = event.height if event else canvas.winfo_height()
+            req_w = content.winfo_reqwidth()
+            req_h = content.winfo_reqheight()
+            canvas.itemconfigure(window_id, width=max(viewport_w, req_w), height=max(viewport_h, req_h))
+            _sync_scrollregion()
+
+        content.bind("<Configure>", _sync_window_to_canvas)
+        canvas.bind("<Configure>", _sync_window_to_canvas)
+
+        return outer, canvas, content
 
     def _build_layout(self) -> None:
         tk = self.tk
@@ -941,16 +956,16 @@ class SchedulerDesktopApp:
         time_choices = military_time_choices()
         weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
 
-        wrapper = ttk.Frame(parent, padding=8)
-        wrapper.pack(fill="both", expand=True)
-        wrapper.columnconfigure(0, weight=1)
-        wrapper.columnconfigure(1, weight=2)
-        wrapper.rowconfigure(0, weight=1)
+        split = ttk.Panedwindow(parent, orient=tk.HORIZONTAL)
+        split.pack(fill="both", expand=True, padx=8, pady=8)
 
-        left = ttk.Labelframe(wrapper, text="Providers", padding=8)
-        left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
-        right = ttk.Labelframe(wrapper, text="Provider Profile", padding=8)
-        right.grid(row=0, column=1, sticky="nsew")
+        left = ttk.Labelframe(split, text="Providers", padding=8)
+        split.add(left, weight=1)
+
+        right_outer = ttk.Labelframe(split, text="Provider Profile", padding=0)
+        split.add(right_outer, weight=2)
+        right_scroll_wrap, _, right = self._make_scrollable_region(right_outer)
+        right_scroll_wrap.pack(fill="both", expand=True)
 
         self.provider_search_var = tk.StringVar(value="")
         ttk.Label(left, text="Search").pack(anchor="w")
@@ -1053,16 +1068,16 @@ class SchedulerDesktopApp:
         weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
         time_choices = military_time_choices()
 
-        wrap = ttk.Frame(parent, padding=8)
-        wrap.pack(fill="both", expand=True)
-        wrap.columnconfigure(0, weight=1)
-        wrap.columnconfigure(1, weight=2)
-        wrap.rowconfigure(0, weight=1)
+        split = ttk.Panedwindow(parent, orient=tk.HORIZONTAL)
+        split.pack(fill="both", expand=True, padx=8, pady=8)
 
-        left = ttk.Labelframe(wrap, text="Rooms", padding=8)
-        left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
-        right = ttk.Labelframe(wrap, text="Room Availability Restrictions", padding=8)
-        right.grid(row=0, column=1, sticky="nsew")
+        left = ttk.Labelframe(split, text="Rooms", padding=8)
+        split.add(left, weight=1)
+
+        right_outer = ttk.Labelframe(split, text="Room Availability Restrictions", padding=0)
+        split.add(right_outer, weight=2)
+        right_scroll_wrap, _, right = self._make_scrollable_region(right_outer)
+        right_scroll_wrap.pack(fill="both", expand=True)
 
         self.room_rule_list = tk.Listbox(left, height=24)
         self.room_rule_list.pack(fill="both", expand=True)
