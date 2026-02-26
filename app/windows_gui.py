@@ -611,17 +611,21 @@ class SchedulerDesktopApp:
             ("Health Check", self.run_health_check),
             ("New Blank Profile", self.new_blank_profile),
             ("Load Profile", self.load_profile_from_file),
+            ("Load Clinic Config", self.load_clinic_config),
+            ("Load Schedule Snapshot", self.load_schedule_snapshot),
             ("Generate Day", self.generate_from_loaded_profile),
             ("Export Schedule", self.export_schedule),
             ("Save Profile", self.save_current_profile),
+            ("Save Clinic Config", self.save_clinic_config),
+            ("Save Schedule Snapshot", self.save_schedule_snapshot),
         ]
         for idx, (label, handler) in enumerate(buttons):
             ttk.Button(controls, text=label, command=lambda h=handler: self._safe_action(h)).grid(row=0, column=idx, padx=3, pady=4, sticky="w")
 
         self.status_var = tk.StringVar(value="Status: Ready")
-        ttk.Label(controls, textvariable=self.status_var).grid(row=1, column=0, columnspan=6, sticky="w", padx=6)
+        ttk.Label(controls, textvariable=self.status_var).grid(row=1, column=0, columnspan=12, sticky="w", padx=6)
         self.profile_var = tk.StringVar(value="Profile: (none loaded)")
-        ttk.Label(controls, textvariable=self.profile_var).grid(row=2, column=0, columnspan=6, sticky="w", padx=6)
+        ttk.Label(controls, textvariable=self.profile_var).grid(row=2, column=0, columnspan=12, sticky="w", padx=6)
 
         notebook = ttk.Notebook(main)
         notebook.pack(fill=tk.BOTH, expand=True, pady=(8, 8))
@@ -1241,7 +1245,7 @@ class SchedulerDesktopApp:
         ttk.Button(ex, text="Add Exception", command=lambda: self._safe_action(self.add_provider_profile_exception)).grid(row=0, column=4, padx=4)
         ttk.Button(ex, text="Remove Exception", command=lambda: self._safe_action(self.remove_provider_profile_exception)).grid(row=0, column=5, padx=4)
         self.provider_exception_list = tk.Listbox(ex, height=5)
-        self.provider_exception_list.grid(row=1, column=0, columnspan=6, sticky="ew", pady=(4, 0))
+        self.provider_exception_list.grid(row=1, column=0, columnspan=12, sticky="ew", pady=(4, 0))
         row += 1
 
         lunch = ttk.Labelframe(right, text="Lunch", padding=6)
@@ -1328,7 +1332,7 @@ class SchedulerDesktopApp:
         ttk.Button(weekly, text="Add Window", command=lambda: self._safe_action(self.add_room_weekly_rule)).grid(row=0, column=4, padx=4)
         ttk.Button(weekly, text="Remove Window", command=lambda: self._safe_action(self.remove_room_weekly_rule)).grid(row=0, column=5, padx=4)
         self.room_weekly_rules_list = tk.Listbox(weekly, height=6)
-        self.room_weekly_rules_list.grid(row=1, column=0, columnspan=6, sticky="ew", pady=(4, 0))
+        self.room_weekly_rules_list.grid(row=1, column=0, columnspan=12, sticky="ew", pady=(4, 0))
 
         self.room_rule_date_var = tk.StringVar(value=date_to_key(datetime.utcnow().date()))
         self.room_rule_date_start_var = tk.StringVar(value="1100")
@@ -1344,7 +1348,7 @@ class SchedulerDesktopApp:
         ttk.Button(dates, text="Add Exception", command=lambda: self._safe_action(self.add_room_date_rule)).grid(row=0, column=4, padx=4)
         ttk.Button(dates, text="Remove Exception", command=lambda: self._safe_action(self.remove_room_date_rule)).grid(row=0, column=5, padx=4)
         self.room_date_rules_list = tk.Listbox(dates, height=6)
-        self.room_date_rules_list.grid(row=1, column=0, columnspan=6, sticky="ew", pady=(4, 0))
+        self.room_date_rules_list.grid(row=1, column=0, columnspan=12, sticky="ew", pady=(4, 0))
 
         self.room_rules_preview_canvas = tk.Canvas(right, width=620, height=180, bg="white", highlightthickness=1, highlightbackground="#ced4da")
         self.room_rules_preview_canvas.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(8, 0))
@@ -3306,6 +3310,190 @@ class SchedulerDesktopApp:
         self._refresh_profile_preview()
         self._set_text(self.eval_report_text, f"Imported {len(imported)} appointments as soft-locked.")
         self.status_var.set("Status: Imported existing schedule")
+
+    def _current_clinic_config(self, config_name: str = "Clinic Config") -> Dict[str, Any]:
+        config_id = "current-clinic-config"
+        if self.loaded_profile:
+            config_id = str((self.loaded_profile.get("clinic_config") or {}).get("config_id") or config_id)
+        return {
+            "artifact_type": "clinic_config",
+            "schema_version": 1,
+            "config_id": config_id,
+            "config_name": config_name,
+            "saved_at": datetime.utcnow().isoformat(),
+            "provider_profiles": copy.deepcopy(self.provider_profiles),
+            "provider_catalog": list(self.provider_catalog),
+            "room_rules": copy.deepcopy(self.room_rules),
+            "discipline_registry": copy.deepcopy(self.discipline_registry),
+            "default_settings": {
+                "day_start": self.day_start_var.get() if hasattr(self, "day_start_var") else "0730",
+                "day_end": self.day_end_var.get() if hasattr(self, "day_end_var") else "1800",
+            },
+        }
+
+    def _clinic_config_hash(self, payload: Dict[str, Any]) -> str:
+        core = json.dumps({
+            "provider_profiles": payload.get("provider_profiles", []),
+            "provider_catalog": payload.get("provider_catalog", []),
+            "room_rules": payload.get("room_rules", {}),
+            "discipline_registry": payload.get("discipline_registry", []),
+        }, sort_keys=True)
+        return str(abs(hash(core)))
+
+    def save_clinic_config(self) -> None:
+        path_raw = self.filedialog.asksaveasfilename(
+            title="Save Clinic Config",
+            defaultextension=".clinic.json",
+            initialfile=f"clinic_config_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.clinic.json",
+            filetypes=[("Clinic config", "*.clinic.json"), ("JSON files", "*.json")],
+        )
+        if not path_raw:
+            return
+        payload = self._current_clinic_config()
+        save_json(Path(path_raw), payload)
+        self.status_var.set(f"Status: Clinic config saved to {path_raw}")
+
+    def _apply_clinic_config(self, payload: Dict[str, Any]) -> None:
+        self.provider_profiles = normalize_provider_catalog(
+            payload.get("provider_profiles") or payload.get("providers") or self.provider_profiles,
+            defaults=DEFAULT_PROVIDER_NAMES,
+            all_rooms=PREDEFINED_ROOMS,
+            disciplines=DISCIPLINES,
+        )
+        self.provider_catalog = [p["provider_name"] for p in self.provider_profiles]
+        self.room_rules = payload.get("room_rules") or self.room_rules
+        self.discipline_registry = self._normalize_discipline_registry(payload.get("discipline_registry", self.discipline_registry))
+        self._persist_provider_catalog()
+        save_room_rules(self.room_rules, valid_rooms=PREDEFINED_ROOMS)
+        self._apply_discipline_registry_to_ui()
+        self._refresh_provider_dropdowns()
+        if hasattr(self, "room_rule_list"):
+            self.revert_room_rules_editor()
+        if hasattr(self, "provider_search_list"):
+            self.refresh_provider_profile_list()
+        if self.loaded_profile:
+            self.loaded_profile["clinic_config"] = {
+                "config_id": payload.get("config_id", "current-clinic-config"),
+                "schema_version": payload.get("schema_version", 1),
+            }
+            self.loaded_profile["discipline_registry"] = copy.deepcopy(self.discipline_registry)
+            self._sync_profile_resources(self.loaded_profile)
+
+    def load_clinic_config(self) -> None:
+        path_raw = self.filedialog.askopenfilename(
+            title="Load Clinic Config",
+            filetypes=[("Clinic config", "*.clinic.json"), ("JSON files", "*.json")],
+        )
+        if not path_raw:
+            return
+        payload = json.loads(Path(path_raw).read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("Clinic config file must be a JSON object")
+        self._apply_clinic_config(payload)
+        self.status_var.set(f"Status: Clinic config loaded from {path_raw}")
+
+    def save_schedule_snapshot(self) -> None:
+        profile = self._require_profile()
+        clinic = self._current_clinic_config()
+        snapshot = {
+            "artifact_type": "schedule_snapshot",
+            "schema_version": 1,
+            "snapshot_id": uuid.uuid4().hex,
+            "snapshot_name": f"snapshot_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}",
+            "saved_at": datetime.utcnow().isoformat(),
+            "clinic_config_ref": {
+                "config_id": clinic.get("config_id"),
+                "schema_version": clinic.get("schema_version", 1),
+                "optional_hash": self._clinic_config_hash(clinic),
+            },
+            "embedded_clinic_config": clinic,
+            "schedule_grid_data": {
+                "profile": copy.deepcopy(profile),
+                "last_result": copy.deepcopy(self.last_result),
+            },
+            "generator_state": {
+                "iop_requirements": copy.deepcopy(self.auto_conditions),
+                "eval_requirements": copy.deepcopy(self.eval_conditions),
+                "settings": {
+                    "auto_start": [self.auto_start_year_var.get(), self.auto_start_month_var.get(), self.auto_start_day_var.get()] if hasattr(self, "auto_start_year_var") else [],
+                    "eval_start": [self.eval_start_year_var.get(), self.eval_start_month_var.get(), self.eval_start_day_var.get()] if hasattr(self, "eval_start_year_var") else [],
+                    "eval_cohort": self.eval_cohort_var.get() if hasattr(self, "eval_cohort_var") else "Mon-Wed",
+                    "eval_patient_count": self.eval_patient_count_var.get() if hasattr(self, "eval_patient_count_var") else "3",
+                },
+            },
+            "manual_edits_metadata": {"undo_depth": len(self.manual_undo_stack)},
+        }
+        path_raw = self.filedialog.asksaveasfilename(
+            title="Save Schedule Snapshot",
+            defaultextension=".schedule.json",
+            initialfile=f"schedule_snapshot_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.schedule.json",
+            filetypes=[("Schedule snapshot", "*.schedule.json"), ("JSON files", "*.json")],
+        )
+        if not path_raw:
+            return
+        save_json(Path(path_raw), snapshot)
+        self.status_var.set(f"Status: Schedule snapshot saved to {path_raw}")
+
+    def load_schedule_snapshot(self) -> None:
+        path_raw = self.filedialog.askopenfilename(
+            title="Load Schedule Snapshot",
+            filetypes=[("Schedule snapshot", "*.schedule.json"), ("JSON files", "*.json")],
+        )
+        if not path_raw:
+            return
+        payload = json.loads(Path(path_raw).read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("Schedule snapshot file must be a JSON object")
+
+        # Backward compatibility: old profile format
+        if payload.get("artifact_type") not in {"schedule_snapshot", "clinic_config"} and "requests" in payload:
+            self.loaded_profile = payload
+            self._sync_profile_resources(self.loaded_profile)
+            self.last_result = build_live_result_from_profile(self.loaded_profile)
+            self._render_patient_grid(self.loaded_profile, self.last_result)
+            self._refresh_profile_preview()
+            self.status_var.set("Status: Loaded legacy profile as schedule snapshot")
+            return
+
+        if payload.get("artifact_type") == "clinic_config":
+            self._apply_clinic_config(payload)
+            self.status_var.set("Status: Loaded clinic config file")
+            return
+
+        clinic_ref = payload.get("clinic_config_ref", {})
+        current_clinic = self._current_clinic_config()
+        current_id = current_clinic.get("config_id")
+        ref_id = clinic_ref.get("config_id")
+        if ref_id and current_id and ref_id != current_id:
+            use_current = self.messagebox.askyesno(
+                "Clinic Config Mismatch",
+                "Snapshot references a different clinic config.\n\nYes: load with CURRENT clinic config (best effort).\nNo: load EMBEDDED clinic config from snapshot (if present).",
+            )
+            if not use_current:
+                embedded = payload.get("embedded_clinic_config")
+                if isinstance(embedded, dict):
+                    self._apply_clinic_config(embedded)
+
+        grid_data = payload.get("schedule_grid_data", {})
+        profile = grid_data.get("profile") or {}
+        if not profile:
+            raise ValueError("Snapshot missing schedule profile data")
+        self.loaded_profile = profile
+        self._sync_profile_resources(self.loaded_profile)
+        self.last_result = grid_data.get("last_result") or build_live_result_from_profile(self.loaded_profile)
+
+        gen_state = payload.get("generator_state", {})
+        self.auto_conditions = [validate_requirement(c) for c in gen_state.get("iop_requirements", []) if isinstance(c, dict)]
+        self.eval_conditions = [validate_requirement(c) for c in gen_state.get("eval_requirements", []) if isinstance(c, dict)]
+        self._persist_requirements_catalog()
+        if hasattr(self, "auto_condition_list"):
+            self._refresh_auto_condition_list()
+        if hasattr(self, "eval_condition_list"):
+            self._refresh_eval_condition_list()
+
+        self._render_patient_grid(self.loaded_profile, self.last_result)
+        self._refresh_profile_preview()
+        self.status_var.set(f"Status: Schedule snapshot loaded from {path_raw}")
 
     def save_current_profile(self) -> None:
         profile = self._require_profile()
