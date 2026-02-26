@@ -4,7 +4,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 SLOT_MINUTES = 15
 
@@ -151,6 +151,10 @@ class UnschedulableError(RuntimeError):
     pass
 
 
+class GenerationCancelledError(RuntimeError):
+    pass
+
+
 class ScheduleEngine:
     """
     Constraint-based scheduler with composable hard/soft rules and diagnostic logging.
@@ -175,6 +179,8 @@ class ScheduleEngine:
         max_backtrack_states: Optional[int] = None,
         max_candidates_per_request: Optional[int] = None,
         max_solve_seconds: Optional[int] = None,
+        cancel_event: Any = None,
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> Dict[str, Assignment]:
         previous_assignments = previous_assignments or {}
         locked_request_ids = locked_request_ids or set()
@@ -209,6 +215,8 @@ class ScheduleEngine:
             previous_assignments=previous_assignments,
             max_backtrack_states=max_backtrack_states,
             max_solve_seconds=max_solve_seconds,
+            cancel_event=cancel_event,
+            progress_callback=progress_callback,
             rooms=rooms,
             providers=providers,
             date_key=date_key,
@@ -322,6 +330,8 @@ class ScheduleEngine:
         previous_assignments: Dict[str, Assignment],
         max_backtrack_states: Optional[int],
         max_solve_seconds: Optional[int],
+        cancel_event: Any,
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]],
         rooms: Sequence[Room],
         providers: Sequence[Provider],
         date_key: str,
@@ -334,6 +344,30 @@ class ScheduleEngine:
         if max_solve_seconds is not None:
             solve_timeout_seconds = max(1, int(max_solve_seconds))
         solve_started_at = time.perf_counter()
+        last_progress_emit = 0.0
+
+        def _emit_progress(state_count: int, req_id: str | None = None) -> None:
+            nonlocal last_progress_emit
+            if progress_callback is None:
+                return
+            now = time.perf_counter()
+            if now - last_progress_emit < 0.12:
+                return
+            payload: Dict[str, Any] = {
+                "elapsed_seconds": now - solve_started_at,
+                "attempts": int(state_count),
+            }
+            if req_id is not None and req_id in request_by_id:
+                req = request_by_id[req_id]
+                payload["requirement_id"] = req.id
+                payload["discipline"] = req.discipline
+                payload["patients"] = list(req.patient_ids)
+            try:
+                progress_callback(payload)
+            except Exception:
+                pass
+            last_progress_emit = now
+
         request_by_id = {r.id: r for r in requests}
         sorted_ids = sorted([r.id for r in requests], key=lambda rid: len(candidate_map[rid]))
         fixed_assignments = [a for rid, a in previous_assignments.items() if rid not in request_by_id]
@@ -409,6 +443,10 @@ class ScheduleEngine:
                 raise UnschedulableError(
                     f"No solution found within {solve_timeout_seconds}s (timed out). Attempts: {states}."
                 )
+            if cancel_event is not None and hasattr(cancel_event, "is_set") and cancel_event.is_set():
+                raise GenerationCancelledError("Generation cancelled.")
+            if index < len(sorted_ids):
+                _emit_progress(states, sorted_ids[index])
             if index == len(sorted_ids):
                 for provider in provider_by_id.values():
                     if not _has_lunch_slot(provider, assigned):
@@ -439,6 +477,7 @@ class ScheduleEngine:
 
         dfs(0, {}, 0)
         self._log_decision(f"Backtracking attempts={states}")
+        _emit_progress(states, None)
         if best is None:
             raise UnschedulableError("No full solution found for the day; all candidate combinations violate hard constraints.")
         return best
