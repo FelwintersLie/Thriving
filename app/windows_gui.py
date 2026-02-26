@@ -2541,6 +2541,26 @@ class SchedulerDesktopApp:
         self.eval_discipline_var.set(selected.get("discipline", self.eval_discipline_var.get()))
         self.eval_mode_var.set(selected.get("session_mode", self.eval_mode_var.get()))
         self.eval_duration_var.set(str(selected.get("duration_minutes", self.eval_duration_var.get())))
+        self.eval_scope_var.set(selected.get("patient_scope", self.eval_scope_var.get()))
+        self.eval_subset_patients_var.set(", ".join(selected.get("patient_ids", [])))
+        self.eval_hard_var.set(bool(selected.get("hard_constraint", True)))
+        self.eval_priority_var.set(str(selected.get("priority", 100)))
+
+        provider_id = selected.get("provider_id", "any")
+        provider_name = "Any provider" if provider_id == "any" else self._provider_display_name(provider_id)
+        self.eval_provider_var.set(provider_name)
+        self.eval_room_var.set("Any compatible room" if selected.get("room_id", "any") == "any" else selected.get("room_id", ""))
+
+        weekday_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+        weekday_values = [weekday_names[d] for d in selected.get("weekdays", []) if 0 <= d < len(weekday_names)]
+        while len(weekday_values) < 3:
+            weekday_values.append("(none)")
+        self.eval_weekday_1_var.set(weekday_values[0])
+        self.eval_weekday_2_var.set(weekday_values[1])
+        self.eval_weekday_3_var.set(weekday_values[2])
+
+        window_tokens = [f"{w['start_minute'] // 60:02d}{w['start_minute'] % 60:02d}-{w['end_minute'] // 60:02d}{w['end_minute'] % 60:02d}" for w in selected.get("time_windows", [])]
+        self.eval_windows_var.set(", ".join(window_tokens))
 
     def edit_selected_eval_condition(self) -> None:
         selection = self.eval_condition_list.curselection()
@@ -2548,9 +2568,20 @@ class SchedulerDesktopApp:
             raise ValueError("Select an EVAL requirement first")
         idx = int(selection[0])
         existing = self.eval_conditions[idx]
+
+        provider_choice = self.eval_provider_var.get().strip()
+        room_choice = self.eval_room_var.get().strip()
+        provider_id = "any"
+        if provider_choice not in ("", "Any provider"):
+            profile = self._provider_profile_by_name(provider_choice)
+            provider_id = profile.get("provider_id") if profile else provider_choice
+
         updated = {
             **existing,
             "discipline": self.eval_discipline_var.get().strip(),
+            "provider_id": provider_id,
+            "provider_ids": [] if provider_id == "any" else [provider_id],
+            "room_id": "any" if room_choice == "Any compatible room" else room_choice,
             "duration_minutes": int(self.eval_duration_var.get()),
             "session_mode": self.eval_mode_var.get().strip(),
             "time_windows": self._parse_eval_windows_from_ui(),
@@ -2588,7 +2619,14 @@ class SchedulerDesktopApp:
         for idx, c in enumerate(self.eval_conditions, start=1):
             days = ",".join(name_map[d] for d in c["weekdays"])
             windows = "; ".join(f"{_to_ampm(w['start_minute'])}-{_to_ampm(w['end_minute'])}" for w in c["time_windows"])
-            line = f"{idx}) [EVAL] {c['id']} | {c['discipline']} | {c['session_mode']} {c['duration_minutes']}m | days={days} | windows={windows}"
+            hard_soft = "hard" if c.get("hard_constraint", True) else "soft"
+            provider_keys = c.get("provider_ids") or ([c.get("provider_id", "any")] if c.get("provider_id", "any") != "any" else ["any"])
+            providers = [self._provider_display_name(p) if p != "any" else "any" for p in provider_keys]
+            line = (
+                f"{idx}) [EVAL] {c['id']} | {c['discipline']} | providers={','.join(providers)} | room={c['room_id']} | "
+                f"{c['session_mode']} {c['duration_minutes']}m x{c.get('sessions_per_week',1)}/wk | scope={c['patient_scope']} | days={days} | weeks={c['weeks']} | "
+                f"windows={windows} | {hard_soft} p={c.get('priority', 100)}"
+            )
             self.eval_condition_list.insert(self.tk.END, line)
 
     def add_auto_condition(self) -> None:
