@@ -14,7 +14,6 @@ from app.auto_scheduler import (
     auto_reconfigure_schedule,
     explain_infeasibility,
     generate_three_week_schedule,
-    generate_eval_schedule,
     validate_requirement,
 )
 from app.health_check import run_health_check
@@ -2852,6 +2851,36 @@ class SchedulerDesktopApp:
             "rooms": build_room_records(self.room_rules),
         }
 
+    def _build_eval_profile_template(self) -> Dict[str, Any]:
+        start = parse_date_parts(self.eval_start_year_var.get(), self.eval_start_month_var.get(), self.eval_start_day_var.get())
+        cohort_type = self.eval_cohort_var.get().strip()
+        if cohort_type not in {"Mon-Wed", "Tue-Thu"}:
+            raise ValueError("Cohort type must be Mon-Wed or Tue-Thu")
+
+        target_weekday = 1 if cohort_type == "Tue-Thu" else 0
+        while start.weekday() != target_weekday:
+            start += timedelta(days=1)
+
+        eval_dates = [(start + timedelta(days=offset)).isoformat() for offset in (0, 1, 2)]
+        day_start = parse_time_input(self.day_start_var.get())
+        day_end = parse_time_input(self.day_end_var.get())
+        eval_patient_count = int(self.eval_patient_count_var.get())
+        if eval_patient_count < 1:
+            raise ValueError("EVAL patient count must be at least 1")
+        eval_patient_ids = [f"E{i}" for i in range(1, eval_patient_count + 1)]
+
+        base_profile = {
+            "date_key": eval_dates[0],
+            "planning_dates": eval_dates,
+            "weekday": start.weekday(),
+            "day_window": {"start_minute": day_start, "end_minute": day_end},
+            "providers": build_provider_records_from_profiles(self.provider_profiles, day_start, day_end)
+            or build_provider_records(self.provider_catalog, day_start, day_end),
+            "patients": [],
+            "rooms": build_room_records(self.room_rules),
+        }
+        return self._ensure_profile_patients(base_profile, eval_patient_ids)
+
     def _ensure_profile_patients(self, profile_template: Dict[str, Any], patient_ids: List[str]) -> Dict[str, Any]:
         ensured = copy.deepcopy(profile_template)
         planning_dates = list(ensured.get("planning_dates", []))
@@ -2996,18 +3025,12 @@ class SchedulerDesktopApp:
         return [r.get("id") for r in self.loaded_profile.get("requests", []) if r.get("soft_locked") and r.get("id")]
 
     def generate_eval_schedule(self) -> None:
-        profile_template = self._build_auto_profile_template()
-        start = parse_date_parts(self.eval_start_year_var.get(), self.eval_start_month_var.get(), self.eval_start_day_var.get())
-        eval_patient_count = int(self.eval_patient_count_var.get())
-        eval_patient_ids = [f"E{i}" for i in range(1, eval_patient_count + 1)]
-        profile_template = self._ensure_profile_patients(profile_template, eval_patient_ids)
-        result = generate_eval_schedule(
+        if not self.eval_conditions:
+            raise ValueError("Add at least one EVAL requirement before generation")
+        profile_template = self._build_eval_profile_template()
+        result = generate_three_week_schedule(
             profile_template=profile_template,
-            cohort_start=start,
-            cohort_type=self.eval_cohort_var.get(),
-            eval_patient_count=eval_patient_count,
-            group_duration_minutes=int(self.eval_group_duration_var.get()),
-            group_start_time=parse_time_input(self.eval_group_start_var.get()),
+            requirements=self.eval_conditions,
             previous_assignments=self._existing_assignment_map(),
             solver_limits=self._solver_limits_from_ui(),
             locked_request_ids=self._soft_locked_request_ids(),
@@ -3040,17 +3063,12 @@ class SchedulerDesktopApp:
             locked_request_ids=soft_locked_ids,
         )
 
-        start = parse_date_parts(self.eval_start_year_var.get(), self.eval_start_month_var.get(), self.eval_start_day_var.get())
-        eval_patient_count = int(self.eval_patient_count_var.get())
-        eval_patient_ids = [f"E{i}" for i in range(1, eval_patient_count + 1)]
-        eval_profile_template = self._ensure_profile_patients(profile_template, eval_patient_ids)
-        eval_result = generate_eval_schedule(
+        if not self.eval_conditions:
+            raise ValueError("Add at least one EVAL requirement before combined generation")
+        eval_profile_template = self._build_eval_profile_template()
+        eval_result = generate_three_week_schedule(
             profile_template=eval_profile_template,
-            cohort_start=start,
-            cohort_type=self.eval_cohort_var.get(),
-            eval_patient_count=eval_patient_count,
-            group_duration_minutes=int(self.eval_group_duration_var.get()),
-            group_start_time=parse_time_input(self.eval_group_start_var.get()),
+            requirements=self.eval_conditions,
             previous_assignments={**existing, **iop_result.get("assignments", {})},
             solver_limits=self._solver_limits_from_ui(),
             locked_request_ids=soft_locked_ids,
