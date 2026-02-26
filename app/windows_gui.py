@@ -2852,6 +2852,26 @@ class SchedulerDesktopApp:
             "rooms": build_room_records(self.room_rules),
         }
 
+    def _ensure_profile_patients(self, profile_template: Dict[str, Any], patient_ids: List[str]) -> Dict[str, Any]:
+        ensured = copy.deepcopy(profile_template)
+        planning_dates = list(ensured.get("planning_dates", []))
+        day_window = ensured.get("day_window", {})
+        day_start = int(day_window.get("start_minute", GRID_START_MINUTE))
+        day_end = int(day_window.get("end_minute", GRID_END_MINUTE))
+
+        availability = {d: [{"start_minute": day_start, "end_minute": day_end}] for d in planning_dates}
+        existing_patients = list(ensured.get("patients", []))
+        existing_ids = {str(p.get("id", "")) for p in existing_patients}
+
+        for pid in patient_ids:
+            if pid in existing_ids:
+                continue
+            existing_patients.append({"id": pid, "name": f"Patient {pid}", "availability": availability})
+            existing_ids.add(pid)
+
+        ensured["patients"] = existing_patients
+        return ensured
+
     def _update_after_auto_generation(self, profile_template: Dict[str, Any], result: Dict[str, Any], default_program_type: str = "IOP") -> None:
         request_lookup = {r.get("id"): r for r in result.get("requests", [])}
         generated_requests: List[Dict[str, Any]] = []
@@ -2978,11 +2998,14 @@ class SchedulerDesktopApp:
     def generate_eval_schedule(self) -> None:
         profile_template = self._build_auto_profile_template()
         start = parse_date_parts(self.eval_start_year_var.get(), self.eval_start_month_var.get(), self.eval_start_day_var.get())
+        eval_patient_count = int(self.eval_patient_count_var.get())
+        eval_patient_ids = [f"E{i}" for i in range(1, eval_patient_count + 1)]
+        profile_template = self._ensure_profile_patients(profile_template, eval_patient_ids)
         result = generate_eval_schedule(
             profile_template=profile_template,
             cohort_start=start,
             cohort_type=self.eval_cohort_var.get(),
-            eval_patient_count=int(self.eval_patient_count_var.get()),
+            eval_patient_count=eval_patient_count,
             group_duration_minutes=int(self.eval_group_duration_var.get()),
             group_start_time=parse_time_input(self.eval_group_start_var.get()),
             previous_assignments=self._existing_assignment_map(),
@@ -3018,11 +3041,14 @@ class SchedulerDesktopApp:
         )
 
         start = parse_date_parts(self.eval_start_year_var.get(), self.eval_start_month_var.get(), self.eval_start_day_var.get())
+        eval_patient_count = int(self.eval_patient_count_var.get())
+        eval_patient_ids = [f"E{i}" for i in range(1, eval_patient_count + 1)]
+        eval_profile_template = self._ensure_profile_patients(profile_template, eval_patient_ids)
         eval_result = generate_eval_schedule(
-            profile_template=profile_template,
+            profile_template=eval_profile_template,
             cohort_start=start,
             cohort_type=self.eval_cohort_var.get(),
-            eval_patient_count=int(self.eval_patient_count_var.get()),
+            eval_patient_count=eval_patient_count,
             group_duration_minutes=int(self.eval_group_duration_var.get()),
             group_start_time=parse_time_input(self.eval_group_start_var.get()),
             previous_assignments={**existing, **iop_result.get("assignments", {})},
