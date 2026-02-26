@@ -557,6 +557,40 @@ class SchedulerDesktopApp:
 
         return outer, canvas, content
 
+    def _bind_canvas_mouse_scrolling(self, canvas) -> None:
+        tk = self.tk
+
+        def _on_mousewheel(event):
+            delta = event.delta
+            if delta == 0:
+                return
+            units = -1 * int(delta / 120)
+            if units == 0:
+                units = -1 if delta > 0 else 1
+            canvas.yview_scroll(units, "units")
+
+        def _on_shift_mousewheel(event):
+            delta = event.delta
+            if delta == 0:
+                return
+            units = -1 * int(delta / 120)
+            if units == 0:
+                units = -1 if delta > 0 else 1
+            canvas.xview_scroll(units, "units")
+
+        def _on_button4(_event):
+            canvas.yview_scroll(-3, "units")
+
+        def _on_button5(_event):
+            canvas.yview_scroll(3, "units")
+
+        canvas.bind("<Enter>", lambda _e: canvas.focus_set())
+        canvas.bind("<MouseWheel>", _on_mousewheel)
+        canvas.bind("<Shift-MouseWheel>", _on_shift_mousewheel)
+        if tk.TkVersion >= 8.6:
+            canvas.bind("<Button-4>", _on_button4)
+            canvas.bind("<Button-5>", _on_button5)
+
     def _build_layout(self) -> None:
         tk = self.tk
         ttk = self.ttk
@@ -649,6 +683,7 @@ class SchedulerDesktopApp:
         xscroll.grid(row=2, column=0, sticky="ew")
         self.grid_canvas.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
         self.grid_canvas.bind("<Button-3>", self._on_grid_right_click)
+        self._bind_canvas_mouse_scrolling(self.grid_canvas)
 
         grid_container.rowconfigure(0, weight=1)
         grid_container.columnconfigure(0, weight=1)
