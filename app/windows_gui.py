@@ -511,6 +511,8 @@ class SchedulerDesktopApp:
         self.discipline_registry: List[Dict[str, Any]] = self._default_discipline_registry()
         self.active_clinic_config: Dict[str, Any] | None = None
         self.active_schedule_snapshot: Dict[str, Any] | None = None
+        self.app_settings_path = Path("data") / "app_settings.json"
+        self.app_settings: Dict[str, Any] = self._load_app_settings()
 
         self._build_layout()
 
@@ -520,6 +522,8 @@ class SchedulerDesktopApp:
             self._sync_profile_resources(self.loaded_profile)
             self.status_var.set("Status: Restored last profile")
             self._refresh_profile_preview()
+
+        self._autoload_default_clinic_config_on_startup()
 
     def _update_loaded_artifact_status(self) -> None:
         clinic_name = "None Loaded"
@@ -534,6 +538,65 @@ class SchedulerDesktopApp:
             self.clinic_config_display_var.set(f"Clinic Config: {clinic_name}")
         if hasattr(self, "schedule_snapshot_display_var"):
             self.schedule_snapshot_display_var.set(f"Schedule Snapshot: {snapshot_name}")
+
+
+    def _load_app_settings(self) -> Dict[str, Any]:
+        path = Path("data") / "app_settings.json"
+        try:
+            if not path.exists():
+                return {"schema_version": 1, "default_clinic_config_path": None}
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError("App settings must be a JSON object")
+            return {
+                "schema_version": int(payload.get("schema_version", 1) or 1),
+                "default_clinic_config_path": payload.get("default_clinic_config_path") or None,
+            }
+        except Exception:
+            return {"schema_version": 1, "default_clinic_config_path": None}
+
+    def _save_app_settings(self) -> None:
+        self.app_settings_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "schema_version": 1,
+            "default_clinic_config_path": self.app_settings.get("default_clinic_config_path") or None,
+        }
+        self.app_settings_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    def _update_default_config_display(self) -> None:
+        if not hasattr(self, "default_config_path_var"):
+            return
+        path = self.app_settings.get("default_clinic_config_path")
+        self.default_config_path_var.set(str(path) if path else "None selected")
+
+    def _set_default_clinic_config_path(self, path: str | None) -> None:
+        self.app_settings["default_clinic_config_path"] = path or None
+        self._save_app_settings()
+        self._update_default_config_display()
+
+    def _load_clinic_config_from_path(self, path_raw: str) -> None:
+        payload = json.loads(Path(path_raw).read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("Clinic config file must be a JSON object")
+        self._apply_clinic_config(payload)
+        self.active_clinic_config = payload
+        self._update_loaded_artifact_status()
+
+    def _autoload_default_clinic_config_on_startup(self) -> None:
+        path_raw = str(self.app_settings.get("default_clinic_config_path") or "").strip()
+        if not path_raw:
+            self._update_default_config_display()
+            return
+        try:
+            path = Path(path_raw)
+            if not path.exists():
+                raise FileNotFoundError(f"Default Clinic Config not found: {path_raw}")
+            self._load_clinic_config_from_path(path_raw)
+            self.status_var.set(f"Status: Auto-loaded default Clinic Config from {path_raw}")
+        except Exception as exc:
+            self.status_var.set(f"Status: Failed to auto-load default Clinic Config ({exc})")
+        finally:
+            self._update_default_config_display()
 
     def _make_scrollable_tab(self, notebook) -> Any:
         outer, canvas, content = self._make_scrollable_region(notebook)
@@ -677,6 +740,10 @@ class SchedulerDesktopApp:
         notebook.add(disciplines_tab, text="Disciplines")
         disciplines_content = getattr(disciplines_tab, "_scroll_content")
 
+        settings_tab = self._make_scrollable_tab(notebook)
+        notebook.add(settings_tab, text="Settings")
+        settings_content = getattr(settings_tab, "_scroll_content")
+
         manual_split = ttk.Panedwindow(manual_content, orient=tk.VERTICAL)
         manual_split.pack(fill=tk.BOTH, expand=True, pady=(0, 8))
 
@@ -750,6 +817,7 @@ class SchedulerDesktopApp:
         self._build_provider_profiles_tab(provider_content)
         self._build_room_rules_tab(room_rules_content)
         self._build_disciplines_tab(disciplines_content)
+        self._build_settings_tab(settings_content)
 
         sizegrip = ttk.Sizegrip(main)
         sizegrip.pack(side=tk.RIGHT, anchor="se", padx=(0, 4), pady=(0, 4))
@@ -901,6 +969,46 @@ class SchedulerDesktopApp:
         if self.loaded_profile is not None:
             self.loaded_profile["discipline_registry"] = copy.deepcopy(self.discipline_registry)
         self._autosave_profile()
+
+    def _build_settings_tab(self, parent) -> None:
+        ttk = self.ttk
+        frame = ttk.Frame(parent, padding=8)
+        frame.pack(fill="both", expand=True)
+
+        default_wrap = ttk.Labelframe(frame, text="Default Clinic Config", padding=10)
+        default_wrap.pack(fill="x", expand=False)
+
+        self.default_config_path_var = self.tk.StringVar(value="None selected")
+        ttk.Label(default_wrap, text="Current Default:").grid(row=0, column=0, sticky="w")
+        ttk.Entry(default_wrap, textvariable=self.default_config_path_var, state="readonly", width=100).grid(row=1, column=0, columnspan=3, sticky="ew", pady=(2, 8))
+
+        ttk.Button(default_wrap, text="Choose Default Config...", command=lambda: self._safe_action(self.choose_default_clinic_config)).grid(row=2, column=0, sticky="w", padx=(0, 6))
+        ttk.Button(default_wrap, text="Clear Default", command=lambda: self._safe_action(self.clear_default_clinic_config)).grid(row=2, column=1, sticky="w", padx=(0, 6))
+        ttk.Button(default_wrap, text="Load Default Now", command=lambda: self._safe_action(self.load_default_clinic_config_now)).grid(row=2, column=2, sticky="w")
+
+        default_wrap.columnconfigure(0, weight=1)
+        self._update_default_config_display()
+
+    def choose_default_clinic_config(self) -> None:
+        path_raw = self.filedialog.askopenfilename(
+            title="Choose Default Clinic Config",
+            filetypes=[("Clinic config", "*.clinic.json"), ("JSON files", "*.json")],
+        )
+        if not path_raw:
+            return
+        self._set_default_clinic_config_path(path_raw)
+        self.status_var.set(f"Status: Default Clinic Config set to {path_raw}")
+
+    def clear_default_clinic_config(self) -> None:
+        self._set_default_clinic_config_path(None)
+        self.status_var.set("Status: Default Clinic Config cleared")
+
+    def load_default_clinic_config_now(self) -> None:
+        path_raw = str(self.app_settings.get("default_clinic_config_path") or "").strip()
+        if not path_raw:
+            raise ValueError("No default Clinic Config selected")
+        self._load_clinic_config_from_path(path_raw)
+        self.status_var.set(f"Status: Loaded default Clinic Config from {path_raw}")
 
     def _build_auto_generator_tab(self, parent) -> None:
         ttk = self.ttk
@@ -3573,12 +3681,7 @@ class SchedulerDesktopApp:
         )
         if not path_raw:
             return
-        payload = json.loads(Path(path_raw).read_text(encoding="utf-8"))
-        if not isinstance(payload, dict):
-            raise ValueError("Clinic config file must be a JSON object")
-        self._apply_clinic_config(payload)
-        self.active_clinic_config = payload
-        self._update_loaded_artifact_status()
+        self._load_clinic_config_from_path(path_raw)
         self.status_var.set(f"Status: Clinic config loaded from {path_raw}")
 
     def save_schedule_snapshot(self) -> None:
