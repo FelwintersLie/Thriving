@@ -1042,14 +1042,93 @@ class SchedulerDesktopApp:
 
         list_frame = ttk.Labelframe(parent, text="Requirement List", padding=10)
         list_frame.pack(fill="both", expand=True, padx=6, pady=6)
+        list_frame.columnconfigure(0, weight=1)
+        list_frame.rowconfigure(0, weight=1)
 
-        list_scroll = ttk.Scrollbar(list_frame, orient=self.tk.VERTICAL)
-        self.auto_condition_list = self.tk.Listbox(list_frame, height=10, yscrollcommand=list_scroll.set)
-        list_scroll.config(command=self.auto_condition_list.yview)
-        self.auto_condition_list.pack(side="left", fill="both", expand=True)
-        list_scroll.pack(side="right", fill="y")
-        self.auto_condition_list.bind("<<ListboxSelect>>", self._on_requirement_select)
+        self.auto_condition_tree_columns = (
+            "requirement_id",
+            "program_type",
+            "provider_a",
+            "provider_b",
+            "provider_c",
+            "room",
+            "mode",
+            "duration",
+            "sessions_week",
+            "weeks",
+            "patient_scope",
+            "weekday_1",
+            "weekday_2",
+            "weekday_3",
+            "weekday_4",
+            "weekday_5",
+            "provider_constraint",
+            "room_constraint",
+            "window_start",
+            "window_end",
+        )
+        self.auto_condition_tree = ttk.Treeview(list_frame, columns=self.auto_condition_tree_columns, show="headings", height=10)
+        self.auto_condition_tree.grid(row=0, column=0, sticky="nsew")
+        list_vscroll = ttk.Scrollbar(list_frame, orient=self.tk.VERTICAL, command=self.auto_condition_tree.yview)
+        list_vscroll.grid(row=0, column=1, sticky="ns")
+        list_hscroll = ttk.Scrollbar(list_frame, orient=self.tk.HORIZONTAL, command=self.auto_condition_tree.xview)
+        list_hscroll.grid(row=1, column=0, sticky="ew")
+        self.auto_condition_tree.configure(yscrollcommand=list_vscroll.set, xscrollcommand=list_hscroll.set)
+
+        heading_map = {
+            "requirement_id": "Requirement ID",
+            "program_type": "Program Type",
+            "provider_a": "Provider A",
+            "provider_b": "Provider B",
+            "provider_c": "Provider C",
+            "room": "Room",
+            "mode": "Mode",
+            "duration": "Duration (minutes)",
+            "sessions_week": "Sessions/week",
+            "weeks": "Weeks",
+            "patient_scope": "Patient Scope",
+            "weekday_1": "Weekday 1",
+            "weekday_2": "Weekday 2",
+            "weekday_3": "Weekday 3",
+            "weekday_4": "Weekday 4",
+            "weekday_5": "Weekday 5",
+            "provider_constraint": "Provider constraint",
+            "room_constraint": "Room constraint",
+            "window_start": "Appointment Window Start",
+            "window_end": "Appointment Window End",
+        }
+        width_map = {
+            "requirement_id": 130,
+            "program_type": 95,
+            "provider_a": 130,
+            "provider_b": 130,
+            "provider_c": 130,
+            "room": 130,
+            "mode": 95,
+            "duration": 120,
+            "sessions_week": 105,
+            "weeks": 110,
+            "patient_scope": 110,
+            "weekday_1": 95,
+            "weekday_2": 95,
+            "weekday_3": 95,
+            "weekday_4": 95,
+            "weekday_5": 95,
+            "provider_constraint": 150,
+            "room_constraint": 150,
+            "window_start": 165,
+            "window_end": 165,
+        }
+        for col in self.auto_condition_tree_columns:
+            self.auto_condition_tree.heading(col, text=heading_map[col], command=lambda c=col: self._sort_auto_condition_tree(c))
+            anchor = "center" if col in {"program_type", "mode", "duration", "sessions_week", "weeks", "patient_scope", "weekday_1", "weekday_2", "weekday_3", "weekday_4", "weekday_5"} else "w"
+            self.auto_condition_tree.column(col, width=width_map[col], minwidth=80, stretch=True, anchor=anchor)
+
+        self.auto_condition_tree.bind("<<TreeviewSelect>>", self._on_requirement_select)
         self.auto_condition_view_index: List[Tuple[str, int]] = []
+        self.auto_condition_row_meta: Dict[str, Tuple[str, int]] = {}
+        self.auto_condition_sort_column = "requirement_id"
+        self.auto_condition_sort_desc = False
 
         output_frame = ttk.Labelframe(parent, text="Generation Status / Bottleneck Report", padding=10)
         output_frame.pack(fill="both", expand=True, padx=6, pady=6)
@@ -2910,13 +2989,19 @@ class SchedulerDesktopApp:
         self._refresh_auto_condition_list()
         self.status_var.set(f"Status: Added requirement {condition['id']}")
 
+    def _selected_auto_condition_ref(self) -> Tuple[str, int] | None:
+        if not hasattr(self, "auto_condition_tree"):
+            return None
+        selected_iids = self.auto_condition_tree.selection()
+        if not selected_iids:
+            return None
+        return self.auto_condition_row_meta.get(selected_iids[0])
+
     def _on_requirement_select(self, _event=None) -> None:
-        if not self.auto_condition_list.curselection():
+        selected_ref = self._selected_auto_condition_ref()
+        if not selected_ref:
             return
-        idx = int(self.auto_condition_list.curselection()[0])
-        if idx >= len(self.auto_condition_view_index):
-            return
-        source, real_idx = self.auto_condition_view_index[idx]
+        source, real_idx = selected_ref
         if source != "IOP":
             self.status_var.set("Status: EVAL requirements are read-only in this view")
             return
@@ -2928,13 +3013,10 @@ class SchedulerDesktopApp:
         self.auto_sessions_per_week_var.set(str(selected.get("sessions_per_week", 1)))
 
     def edit_selected_condition(self) -> None:
-        selection = self.auto_condition_list.curselection()
-        if not selection:
+        selected_ref = self._selected_auto_condition_ref()
+        if not selected_ref:
             raise ValueError("Select a requirement in the list first")
-        idx = int(selection[0])
-        if idx >= len(self.auto_condition_view_index):
-            raise ValueError("Selected requirement is out of range")
-        source, real_idx = self.auto_condition_view_index[idx]
+        source, real_idx = selected_ref
         if source != "IOP":
             raise ValueError("EVAL requirements are read-only in this list")
         existing = self.auto_conditions[real_idx]
@@ -2954,13 +3036,10 @@ class SchedulerDesktopApp:
         self.status_var.set(f"Status: Updated requirement {updated['id']}")
 
     def duplicate_selected_condition(self) -> None:
-        selection = self.auto_condition_list.curselection()
-        if not selection:
+        selected_ref = self._selected_auto_condition_ref()
+        if not selected_ref:
             raise ValueError("Select a requirement in the list first")
-        idx = int(selection[0])
-        if idx >= len(self.auto_condition_view_index):
-            raise ValueError("Selected requirement is out of range")
-        source_program, real_idx = self.auto_condition_view_index[idx]
+        source_program, real_idx = selected_ref
         if source_program != "IOP":
             raise ValueError("EVAL requirements are read-only in this list")
         source = dict(self.auto_conditions[real_idx])
@@ -2993,13 +3072,10 @@ class SchedulerDesktopApp:
         self._render_provider_preview_canvas(self.provider_preview_canvas, provider)
 
     def remove_selected_condition(self) -> None:
-        selection = self.auto_condition_list.curselection()
-        if not selection:
+        selected_ref = self._selected_auto_condition_ref()
+        if not selected_ref:
             raise ValueError("Select a requirement in the list first")
-        idx = int(selection[0])
-        if idx >= len(self.auto_condition_view_index):
-            raise ValueError("Selected requirement is out of range")
-        source, real_idx = self.auto_condition_view_index[idx]
+        source, real_idx = selected_ref
         if source != "IOP":
             raise ValueError("EVAL requirements are read-only in this list")
         rid = self.auto_conditions[real_idx]["id"]
@@ -3014,35 +3090,105 @@ class SchedulerDesktopApp:
         self._refresh_auto_condition_list()
         self.status_var.set("Status: Cleared all requirements")
 
-    def _refresh_auto_condition_list(self) -> None:
-        self.auto_condition_list.delete(0, self.tk.END)
-        self.auto_condition_view_index = []
-        if not self.auto_conditions and not (hasattr(self, "show_eval_requirements_var") and self.show_eval_requirements_var.get() and self.eval_conditions):
-            self.auto_condition_list.insert(self.tk.END, "No conditions added yet.")
-            return
+    def _weekday_name(self, weekday_idx: int) -> str:
+        names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+        if 0 <= int(weekday_idx) < len(names):
+            return names[int(weekday_idx)]
+        return ""
 
-        name_map = ["Mon", "Tue", "Wed", "Thu", "Fri"]
+    def _auto_condition_row_values(self, source_program: str, condition: Dict[str, Any]) -> Dict[str, str]:
+        provider_keys = condition.get("provider_ids") or ([condition.get("provider_id", "any")] if condition.get("provider_id", "any") != "any" else [])
+        provider_names = [self._provider_display_name(p) for p in provider_keys]
+        providers = (provider_names if provider_names else ["Any"]) + ["", "", ""]
+        weekdays = [self._weekday_name(d) for d in condition.get("weekdays", [])]
+        weekdays += ["", "", "", "", ""]
+
+        windows = condition.get("time_windows") or []
+        first_window = windows[0] if windows else {"start_minute": "", "end_minute": ""}
+        start_txt = _to_ampm(int(first_window["start_minute"])) if str(first_window.get("start_minute", "")).strip() != "" else ""
+        end_txt = _to_ampm(int(first_window["end_minute"])) if str(first_window.get("end_minute", "")).strip() != "" else ""
+
+        return {
+            "requirement_id": str(condition.get("id", "")),
+            "program_type": source_program,
+            "provider_a": providers[0] if providers else "Any",
+            "provider_b": providers[1],
+            "provider_c": providers[2],
+            "room": "Any compatible room" if condition.get("room_id", "any") == "any" else str(condition.get("room_id", "")),
+            "mode": str(condition.get("session_mode", "")),
+            "duration": str(condition.get("duration_minutes", "")),
+            "sessions_week": str(condition.get("sessions_per_week", "")),
+            "weeks": ",".join(str(w) for w in condition.get("weeks", [])),
+            "patient_scope": str(condition.get("patient_scope", "")),
+            "weekday_1": weekdays[0],
+            "weekday_2": weekdays[1],
+            "weekday_3": weekdays[2],
+            "weekday_4": weekdays[3],
+            "weekday_5": weekdays[4],
+            "provider_constraint": "Any" if not provider_names else ", ".join(provider_names),
+            "room_constraint": "Any" if condition.get("room_id", "any") == "any" else str(condition.get("room_id", "")),
+            "window_start": start_txt,
+            "window_end": end_txt,
+        }
+
+    def _sort_auto_condition_tree(self, column: str) -> None:
+        if not hasattr(self, "auto_condition_tree"):
+            return
+        if self.auto_condition_sort_column == column:
+            self.auto_condition_sort_desc = not self.auto_condition_sort_desc
+        else:
+            self.auto_condition_sort_column = column
+            self.auto_condition_sort_desc = False
+        self._refresh_auto_condition_list()
+
+    def _auto_condition_sort_key(self, row: Dict[str, Any], column: str):
+        value = row["values"].get(column, "")
+        if column in {"duration", "sessions_week"}:
+            try:
+                return int(value)
+            except Exception:
+                return -1
+        if column in {"requirement_id"}:
+            text = str(value)
+            digits = "".join(ch for ch in text if ch.isdigit())
+            if digits:
+                return (int(digits), text.lower())
+            return (10**9, text.lower())
+        return str(value).lower()
+
+    def _refresh_auto_condition_list(self) -> None:
+        if not hasattr(self, "auto_condition_tree"):
+            return
+        for iid in self.auto_condition_tree.get_children():
+            self.auto_condition_tree.delete(iid)
+        self.auto_condition_view_index = []
+        self.auto_condition_row_meta = {}
+
         display_rows: List[Tuple[str, Dict[str, Any], int]] = [("IOP", c, idx) for idx, c in enumerate(self.auto_conditions)]
         if hasattr(self, "show_eval_requirements_var") and self.show_eval_requirements_var.get():
             display_rows.extend(("EVAL", c, idx) for idx, c in enumerate(self.eval_conditions))
 
-        for disp_idx, (source_program, c, original_idx) in enumerate(display_rows, start=1):
-            days = ",".join(name_map[d] for d in c["weekdays"])
-            windows = "; ".join(f"{_to_ampm(w['start_minute'])}-{_to_ampm(w['end_minute'])}" for w in c["time_windows"])
-            hard_soft = "hard" if c.get("hard_constraint", True) else "soft"
-            provider_keys = c.get("provider_ids") or ([c.get("provider_id", "any")] if c.get("provider_id", "any") != "any" else ["any"])
-            providers = [self._provider_display_name(p) if p != "any" else "any" for p in provider_keys]
-            line = (
-                f"{disp_idx}) [{source_program}] {c['id']} | {c['discipline']} | providers={','.join(providers)} | room={c['room_id']} | "
-                f"{c['session_mode']} {c['duration_minutes']}m x{c.get('sessions_per_week',1)}/wk | scope={c['patient_scope']} | days={days} | weeks={c['weeks']} | "
-                f"windows={windows} | {hard_soft} p={c.get('priority', 100)}"
-            )
-            self.auto_condition_list.insert(self.tk.END, line)
-            self.auto_condition_view_index.append((source_program, original_idx))
-            if source_program == "IOP":
-                self.auto_condition_list.itemconfig(self.auto_condition_list.size() - 1, foreground="#0b2d5c")
-            else:
-                self.auto_condition_list.itemconfig(self.auto_condition_list.size() - 1, foreground="#b00020")
+        if not display_rows:
+            return
+
+        rows = []
+        for source_program, condition, original_idx in display_rows:
+            row_values = self._auto_condition_row_values(source_program, condition)
+            rows.append({"source": source_program, "original_idx": original_idx, "values": row_values})
+
+        sort_col = self.auto_condition_sort_column if hasattr(self, "auto_condition_sort_column") else "requirement_id"
+        desc = self.auto_condition_sort_desc if hasattr(self, "auto_condition_sort_desc") else False
+        rows = sorted(rows, key=lambda r: self._auto_condition_sort_key(r, sort_col), reverse=desc)
+
+        for display_idx, row in enumerate(rows):
+            iid = f"req_{row['source']}_{row['original_idx']}_{display_idx}"
+            values = [row["values"].get(c, "") for c in self.auto_condition_tree_columns]
+            self.auto_condition_tree.insert("", "end", iid=iid, values=values, tags=(row["source"].lower(), "odd" if display_idx % 2 else "even"))
+            self.auto_condition_row_meta[iid] = (row["source"], row["original_idx"])
+
+        self.auto_condition_tree.tag_configure("iop", foreground="#0b2d5c")
+        self.auto_condition_tree.tag_configure("eval", foreground="#7a0015")
+        self.auto_condition_tree.tag_configure("odd", background="#f8f9fa")
 
     def _solver_limits_from_ui(self) -> Dict[str, int]:
         effort = self.auto_solver_effort_var.get().strip().lower()
@@ -3536,7 +3682,7 @@ class SchedulerDesktopApp:
         self.auto_conditions = [validate_requirement(c) for c in gen_state.get("iop_requirements", []) if isinstance(c, dict)]
         self.eval_conditions = [validate_requirement(c) for c in gen_state.get("eval_requirements", []) if isinstance(c, dict)]
         self._persist_requirements_catalog()
-        if hasattr(self, "auto_condition_list"):
+        if hasattr(self, "auto_condition_tree"):
             self._refresh_auto_condition_list()
         if hasattr(self, "eval_condition_list"):
             self._refresh_eval_condition_list()
