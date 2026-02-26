@@ -2169,7 +2169,7 @@ class SchedulerDesktopApp:
             try:
                 value = worker()
             except Exception as exc:  # noqa: BLE001
-                self.root.after(0, lambda: on_error(exc))
+                self.root.after(0, lambda exc=exc: on_error(exc))
                 return
             self.root.after(0, lambda: on_success(value))
 
