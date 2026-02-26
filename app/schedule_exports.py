@@ -303,6 +303,139 @@ def _fit_text_for_box(text: str, width_px: float, height_px: float, font_px: flo
     return "\n".join(lines)
 
 
+
+def _hex_to_argb(hex_color: str) -> str:
+    clean = hex_color.strip().lstrip("#")
+    if len(clean) != 6:
+        clean = "000000"
+    return "FF" + clean.upper()
+
+
+def export_layout_to_xlsx(layout: Dict[str, Any], out_path: Path, title: str = "Schedule") -> None:
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+        from openpyxl.utils import get_column_letter
+    except ImportError as exc:
+        raise RuntimeError("openpyxl is required for Excel export. Install with: python3 -m pip install openpyxl") from exc
+
+    style = layout.get("style", {})
+    canvas = layout.get("canvas", {})
+    time_col_w = int(style.get("time_col_w", 85))
+    header_h = int(style.get("header_h", 42))
+    row_h = int(style.get("row_h", 22))
+    col_w = int(style.get("col_w", 180))
+    total_w = int(canvas.get("width", 500))
+    total_h = int(canvas.get("height", 300))
+
+    time_rows = max(1, int(round((total_h - header_h) / max(1, row_h))))
+    data_cols = max(1, int(round((total_w - time_col_w) / max(1, col_w))))
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Schedule"
+
+    thin = Side(style="thin", color="FFADB5BD")
+    base_border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    ws.column_dimensions["A"].width = max(8, time_col_w / 7.0)
+    for c in range(2, data_cols + 2):
+        ws.column_dimensions[get_column_letter(c)].width = max(10, col_w / 7.0)
+
+    ws.row_dimensions[1].height = max(18, header_h * 0.75)
+    for r in range(2, time_rows + 2):
+        ws.row_dimensions[r].height = max(14, row_h * 0.75)
+
+    for r in range(1, time_rows + 2):
+        for c in range(1, data_cols + 2):
+            cell = ws.cell(row=r, column=c)
+            cell.border = base_border
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    for rect in layout.get("rectangles", []):
+        x0 = int(rect.get("x0", 0))
+        y0 = int(rect.get("y0", 0))
+        x1 = int(rect.get("x1", 0))
+        y1 = int(rect.get("y1", 0))
+        if y1 <= 0:
+            row = 1
+            if x1 <= time_col_w:
+                c0 = c1 = 1
+            else:
+                c0 = max(2, 2 + int((x0 - time_col_w) // max(1, col_w)))
+                c1 = max(c0, 1 + int((x1 - time_col_w) // max(1, col_w)))
+            for c in range(c0, min(c1, data_cols + 1) + 1):
+                ws.cell(row=row, column=c).fill = PatternFill(fill_type="solid", fgColor=_hex_to_argb(rect.get("fill", "#ffffff")))
+            continue
+
+        if x1 <= time_col_w:
+            c0 = c1 = 1
+        else:
+            c0 = max(2, 2 + int((x0 - time_col_w) // max(1, col_w)))
+            c1 = max(c0, 1 + int((x1 - time_col_w) // max(1, col_w)))
+
+        r0 = 2 + max(0, int((y0 - header_h) // max(1, row_h)))
+        r1 = 1 + max(1, int((y1 - header_h) // max(1, row_h)))
+
+        for rr in range(r0, min(r1, time_rows + 1) + 1):
+            for cc in range(c0, min(c1, data_cols + 1) + 1):
+                ws.cell(row=rr, column=cc).fill = PatternFill(fill_type="solid", fgColor=_hex_to_argb(rect.get("fill", "#ffffff")))
+
+    appointment_text_by_id: Dict[str, str] = {}
+    for text in layout.get("texts", []):
+        if text.get("kind") == "appointment" and text.get("request_id"):
+            appointment_text_by_id[str(text.get("request_id"))] = str(text.get("text", ""))
+
+    for text in layout.get("texts", []):
+        content = str(text.get("text", "")).strip()
+        if not content:
+            continue
+        x = float(text.get("x", 0))
+        y = float(text.get("y", 0))
+        if y <= header_h:
+            row = 1
+            col = 1 if x <= time_col_w else 2 + int((x - time_col_w) // max(1, col_w))
+            cell = ws.cell(row=row, column=max(1, min(data_cols + 1, col)))
+            cell.value = content
+            cell.font = Font(bold=bool(text.get("bold", False)), color=_hex_to_argb(text.get("fill", "#000000")))
+            continue
+        if x <= time_col_w:
+            row = 2 + int((y - header_h) // max(1, row_h))
+            if 2 <= row <= time_rows + 1:
+                cell = ws.cell(row=row, column=1)
+                cell.value = content
+                cell.font = Font(bold=bool(text.get("bold", False)), color=_hex_to_argb(text.get("fill", "#000000")))
+
+    for rect in layout.get("rectangles", []):
+        if rect.get("kind") != "appointment":
+            continue
+        req_id = str(rect.get("request_id", ""))
+        content = appointment_text_by_id.get(req_id, "")
+
+        x0 = int(rect.get("x0", 0))
+        x1 = int(rect.get("x1", 0))
+        y0 = int(rect.get("y0", 0))
+        y1 = int(rect.get("y1", 0))
+
+        col = max(2, 2 + int((x0 - time_col_w) // max(1, col_w)))
+        row_start = 2 + max(0, int((y0 - header_h) // max(1, row_h)))
+        row_end = 1 + max(1, int((y1 - header_h) // max(1, row_h)))
+        row_start = max(2, min(time_rows + 1, row_start))
+        row_end = max(row_start, min(time_rows + 1, row_end))
+
+        if row_end > row_start:
+            ws.merge_cells(start_row=row_start, start_column=col, end_row=row_end, end_column=col)
+        cell = ws.cell(row=row_start, column=col)
+        cell.value = content
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.font = Font(color="FF1B263B")
+        cell.fill = PatternFill(fill_type="solid", fgColor=_hex_to_argb(rect.get("fill", "#ffffff")))
+
+    if title:
+        ws["A1"].comment = None
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    wb.save(str(out_path))
+
 def export_layout_to_pptx(layout: Dict[str, Any], out_path: Path, title: str) -> None:
     try:
         from pptx import Presentation

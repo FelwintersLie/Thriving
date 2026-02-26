@@ -42,6 +42,7 @@ from app.schedule_exports import (
     build_schedule_layout_model,
     draw_layout_on_tk_canvas,
     export_layout_to_pptx,
+    export_layout_to_xlsx,
     render_layout_to_png,
 )
 
@@ -705,6 +706,7 @@ class SchedulerDesktopApp:
         ttk.Button(view_controls, text="Apply View", command=lambda: self._safe_action(self.refresh_current_grid_view)).pack(side="left", padx=8)
         ttk.Button(view_controls, text="Export Schedule as PNG", command=lambda: self._safe_action(self.export_view_as_png)).pack(side="left", padx=6)
         ttk.Button(view_controls, text="Export as PowerPoint", command=lambda: self._safe_action(self.export_view_as_pptx)).pack(side="left", padx=6)
+        ttk.Button(view_controls, text="Export Schedule as Excel", command=lambda: self._safe_action(self.export_view_as_excel)).pack(side="left", padx=6)
 
         def _init_manual_split_position():
             total_h = manual_split.winfo_height()
@@ -2042,6 +2044,38 @@ class SchedulerDesktopApp:
             worker,
             lambda p: (self.status_var.set(f"Status: Exported PNG to {p}"), self.messagebox.showinfo("Export complete", f"PNG exported to:\n{p}")),
             lambda e: self.messagebox.showerror("PNG export failed", str(e)),
+        )
+
+    def export_view_as_excel(self) -> None:
+        profile = self._require_profile()
+        if not self.last_result:
+            self.messagebox.showinfo("Export", "Add or generate a schedule first.")
+            return
+        selected_date = self.appt_date_var.get().strip() if hasattr(self, "appt_date_var") else ""
+        date_part = selected_date or datetime.utcnow().strftime("%Y-%m-%d_%H%M")
+        mode_part = (self.grid_mode_var.get() if hasattr(self, "grid_mode_var") else "Patient Grid").replace(" ", "_").lower()
+        path_raw = self.filedialog.asksaveasfilename(
+            title="Export current schedule view as Excel",
+            defaultextension=".xlsx",
+            initialfile=f"schedule_{date_part}_{mode_part}.xlsx",
+            filetypes=[("Excel files", "*.xlsx")],
+        )
+        if not path_raw:
+            return
+        out_path = Path(path_raw)
+        visible = [selected_date] if selected_date else None
+        layout = self._build_current_grid_layout(profile, self.last_result, visible_dates=visible)
+        self.status_var.set("Status: Exporting Excel...")
+
+        def worker() -> Path:
+            title = f"Schedule {date_part} | {self.grid_mode_var.get()} | {self.program_filter_var.get()}"
+            export_layout_to_xlsx(layout, out_path, title=title)
+            return out_path
+
+        self._run_in_background(
+            worker,
+            lambda p: (self.status_var.set(f"Status: Exported Excel to {p}"), self.messagebox.showinfo("Export complete", f"Excel exported to:\n{p}")),
+            lambda e: self.messagebox.showerror("Excel export failed", str(e)),
         )
 
     def export_view_as_pptx(self) -> None:
