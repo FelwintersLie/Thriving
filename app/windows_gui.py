@@ -509,14 +509,32 @@ class SchedulerDesktopApp:
         self.manual_undo_stack: List[Dict[str, Any]] = []
         self.selected_request_id: str | None = None
         self.discipline_registry: List[Dict[str, Any]] = self._default_discipline_registry()
+        self.active_clinic_config: Dict[str, Any] | None = None
+        self.active_schedule_snapshot: Dict[str, Any] | None = None
 
         self._build_layout()
 
         if self.loaded_profile:
+            if isinstance(self.loaded_profile.get("clinic_config"), dict):
+                self.active_clinic_config = dict(self.loaded_profile.get("clinic_config") or {})
             self._sync_profile_resources(self.loaded_profile)
             self.status_var.set("Status: Restored last profile")
             self.profile_var.set("Profile: restored from data/last_profile.json")
             self._refresh_profile_preview()
+
+    def _update_loaded_artifact_status(self) -> None:
+        clinic_name = "None Loaded"
+        if isinstance(self.active_clinic_config, dict):
+            clinic_name = str(self.active_clinic_config.get("config_name") or self.active_clinic_config.get("config_id") or "None Loaded")
+
+        snapshot_name = "None Loaded"
+        if isinstance(self.active_schedule_snapshot, dict):
+            snapshot_name = str(self.active_schedule_snapshot.get("snapshot_name") or self.active_schedule_snapshot.get("snapshot_id") or "None Loaded")
+
+        if hasattr(self, "clinic_config_display_var"):
+            self.clinic_config_display_var.set(f"Clinic Config: {clinic_name}")
+        if hasattr(self, "schedule_snapshot_display_var"):
+            self.schedule_snapshot_display_var.set(f"Schedule Snapshot: {snapshot_name}")
 
     def _make_scrollable_tab(self, notebook) -> Any:
         outer, canvas, content = self._make_scrollable_region(notebook)
@@ -626,6 +644,14 @@ class SchedulerDesktopApp:
         ttk.Label(controls, textvariable=self.status_var).grid(row=1, column=0, columnspan=12, sticky="w", padx=6)
         self.profile_var = tk.StringVar(value="Profile: (none loaded)")
         ttk.Label(controls, textvariable=self.profile_var).grid(row=2, column=0, columnspan=12, sticky="w", padx=6)
+
+        artifact_bar = ttk.Frame(main, padding=(0, 2))
+        artifact_bar.pack(fill=tk.X, padx=2, pady=(2, 4))
+        self.clinic_config_display_var = tk.StringVar(value="Clinic Config: None Loaded")
+        self.schedule_snapshot_display_var = tk.StringVar(value="Schedule Snapshot: None Loaded")
+        ttk.Label(artifact_bar, textvariable=self.clinic_config_display_var).pack(anchor="w")
+        ttk.Label(artifact_bar, textvariable=self.schedule_snapshot_display_var).pack(anchor="w")
+        self._update_loaded_artifact_status()
 
         notebook = ttk.Notebook(main)
         notebook.pack(fill=tk.BOTH, expand=True, pady=(8, 8))
@@ -1717,6 +1743,8 @@ class SchedulerDesktopApp:
         self._persist_provider_catalog()
         self._refresh_provider_dropdowns()
         if self.loaded_profile:
+            if isinstance(self.loaded_profile.get("clinic_config"), dict):
+                self.active_clinic_config = dict(self.loaded_profile.get("clinic_config") or {})
             self._sync_profile_resources(self.loaded_profile)
             self.last_result = build_live_result_from_profile(self.loaded_profile)
             self._render_patient_grid(self.loaded_profile, self.last_result)
@@ -1755,6 +1783,8 @@ class SchedulerDesktopApp:
         self._persist_provider_catalog()
         self._refresh_provider_dropdowns()
         if self.loaded_profile:
+            if isinstance(self.loaded_profile.get("clinic_config"), dict):
+                self.active_clinic_config = dict(self.loaded_profile.get("clinic_config") or {})
             self._sync_profile_resources(self.loaded_profile)
             self.last_result = build_live_result_from_profile(self.loaded_profile)
             self._render_patient_grid(self.loaded_profile, self.last_result)
@@ -2052,6 +2082,8 @@ class SchedulerDesktopApp:
         self.room_rules = self.room_rules
         save_room_rules(self.room_rules, valid_rooms=PREDEFINED_ROOMS)
         if self.loaded_profile:
+            if isinstance(self.loaded_profile.get("clinic_config"), dict):
+                self.active_clinic_config = dict(self.loaded_profile.get("clinic_config") or {})
             self._sync_profile_resources(self.loaded_profile)
             self.last_result = build_live_result_from_profile(self.loaded_profile)
             self._render_patient_grid(self.loaded_profile, self.last_result)
@@ -2317,6 +2349,8 @@ class SchedulerDesktopApp:
         self.manual_undo_stack = []
         self.selected_request_id = None
         self.profile_var.set("Profile: unsaved")
+        self.active_schedule_snapshot = None
+        self._update_loaded_artifact_status()
         self.status_var.set("Status: Created blank profile")
         self._refresh_profile_preview()
 
@@ -2334,6 +2368,10 @@ class SchedulerDesktopApp:
         self.selected_request_id = None
         self._sync_profile_resources(self.loaded_profile)
         self.profile_var.set(f"Profile: {path}")
+        self.active_schedule_snapshot = None
+        if isinstance(self.loaded_profile.get("clinic_config"), dict):
+            self.active_clinic_config = dict(self.loaded_profile.get("clinic_config") or {})
+        self._update_loaded_artifact_status()
         self.status_var.set("Status: Profile loaded")
         self._refresh_profile_preview()
 
@@ -2376,6 +2414,8 @@ class SchedulerDesktopApp:
         })
         self._persist_provider_catalog()
         if self.loaded_profile:
+            if isinstance(self.loaded_profile.get("clinic_config"), dict):
+                self.active_clinic_config = dict(self.loaded_profile.get("clinic_config") or {})
             self._sync_profile_resources(self.loaded_profile)
         self.provider_new_var.set("")
         self.status_var.set(f"Status: Added provider {name}")
@@ -2394,6 +2434,8 @@ class SchedulerDesktopApp:
         self.provider_profiles = [p for p in self.provider_profiles if p.get("provider_id") != name and p.get("provider_name") != name and p.get("id") != name]
         self._persist_provider_catalog()
         if self.loaded_profile:
+            if isinstance(self.loaded_profile.get("clinic_config"), dict):
+                self.active_clinic_config = dict(self.loaded_profile.get("clinic_config") or {})
             self._sync_profile_resources(self.loaded_profile)
         self.status_var.set(f"Status: Removed provider {name}")
         self._refresh_profile_preview()
@@ -2453,6 +2495,8 @@ class SchedulerDesktopApp:
 
         self._persist_provider_catalog()
         if self.loaded_profile:
+            if isinstance(self.loaded_profile.get("clinic_config"), dict):
+                self.active_clinic_config = dict(self.loaded_profile.get("clinic_config") or {})
             self._sync_profile_resources(self.loaded_profile)
             self.last_result = build_live_result_from_profile(self.loaded_profile)
             self._render_patient_grid(self.loaded_profile, self.last_result)
@@ -3350,6 +3394,8 @@ class SchedulerDesktopApp:
         if not path_raw:
             return
         payload = self._current_clinic_config()
+        self.active_clinic_config = payload
+        self._update_loaded_artifact_status()
         save_json(Path(path_raw), payload)
         self.status_var.set(f"Status: Clinic config saved to {path_raw}")
 
@@ -3390,6 +3436,8 @@ class SchedulerDesktopApp:
         if not isinstance(payload, dict):
             raise ValueError("Clinic config file must be a JSON object")
         self._apply_clinic_config(payload)
+        self.active_clinic_config = payload
+        self._update_loaded_artifact_status()
         self.status_var.set(f"Status: Clinic config loaded from {path_raw}")
 
     def save_schedule_snapshot(self) -> None:
@@ -3431,6 +3479,8 @@ class SchedulerDesktopApp:
         )
         if not path_raw:
             return
+        self.active_schedule_snapshot = snapshot
+        self._update_loaded_artifact_status()
         save_json(Path(path_raw), snapshot)
         self.status_var.set(f"Status: Schedule snapshot saved to {path_raw}")
 
@@ -3452,11 +3502,15 @@ class SchedulerDesktopApp:
             self.last_result = build_live_result_from_profile(self.loaded_profile)
             self._render_patient_grid(self.loaded_profile, self.last_result)
             self._refresh_profile_preview()
+            self.active_schedule_snapshot = {"snapshot_name": "Legacy Profile"}
+            self._update_loaded_artifact_status()
             self.status_var.set("Status: Loaded legacy profile as schedule snapshot")
             return
 
         if payload.get("artifact_type") == "clinic_config":
             self._apply_clinic_config(payload)
+            self.active_clinic_config = payload
+            self._update_loaded_artifact_status()
             self.status_var.set("Status: Loaded clinic config file")
             return
 
@@ -3473,6 +3527,7 @@ class SchedulerDesktopApp:
                 embedded = payload.get("embedded_clinic_config")
                 if isinstance(embedded, dict):
                     self._apply_clinic_config(embedded)
+                    self.active_clinic_config = embedded
 
         grid_data = payload.get("schedule_grid_data", {})
         profile = grid_data.get("profile") or {}
@@ -3493,6 +3548,8 @@ class SchedulerDesktopApp:
 
         self._render_patient_grid(self.loaded_profile, self.last_result)
         self._refresh_profile_preview()
+        self.active_schedule_snapshot = payload
+        self._update_loaded_artifact_status()
         self.status_var.set(f"Status: Schedule snapshot loaded from {path_raw}")
 
     def save_current_profile(self) -> None:
@@ -3511,6 +3568,9 @@ class SchedulerDesktopApp:
         save_profile(path, profile)
         self.loaded_profile_path = path
         self.profile_var.set(f"Profile: {path}")
+        if isinstance(profile.get("clinic_config"), dict):
+            self.active_clinic_config = dict(profile.get("clinic_config") or {})
+            self._update_loaded_artifact_status()
         self.status_var.set("Status: Profile saved")
         self._autosave_profile()
         if hasattr(self, "provider_preview_canvas"):
