@@ -553,6 +553,7 @@ class SchedulerDesktopApp:
 
         content.bind("<Configure>", _sync_window_to_canvas)
         canvas.bind("<Configure>", _sync_window_to_canvas)
+        canvas.after_idle(_sync_window_to_canvas)
 
         return outer, canvas, content
 
@@ -652,7 +653,7 @@ class SchedulerDesktopApp:
         ttk.Label(manual_content, textvariable=self.legend_var).pack(anchor="w", pady=(6, 0))
 
         view_controls = ttk.Frame(manual_content)
-        view_controls.pack(fill=tk.X, pady=(4, 0))
+        view_controls.pack(fill=tk.X, expand=True, pady=(4, 0))
         self.grid_mode_var = tk.StringVar(value="Patient Grid")
         self.program_filter_var = tk.StringVar(value="Both")
         ttk.Label(view_controls, text="Grid Mode").pack(side="left")
@@ -966,6 +967,8 @@ class SchedulerDesktopApp:
         split.add(right_outer, weight=2)
         right_scroll_wrap, _, right = self._make_scrollable_region(right_outer)
         right_scroll_wrap.pack(fill="both", expand=True)
+        right.columnconfigure(0, weight=0)
+        right.columnconfigure(1, weight=1)
 
         self.provider_search_var = tk.StringVar(value="")
         ttk.Label(left, text="Search").pack(anchor="w")
@@ -1078,6 +1081,8 @@ class SchedulerDesktopApp:
         split.add(right_outer, weight=2)
         right_scroll_wrap, _, right = self._make_scrollable_region(right_outer)
         right_scroll_wrap.pack(fill="both", expand=True)
+        right.columnconfigure(0, weight=0)
+        right.columnconfigure(1, weight=1)
 
         self.room_rule_list = tk.Listbox(left, height=24)
         self.room_rule_list.pack(fill="both", expand=True)
