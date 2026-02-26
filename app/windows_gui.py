@@ -651,19 +651,11 @@ class SchedulerDesktopApp:
         top_section = ttk.Frame(manual_split)
         manual_split.add(top_section, weight=3)
 
-        upper = ttk.Panedwindow(top_section, orient=tk.HORIZONTAL)
-        upper.pack(fill=tk.BOTH, expand=True)
-
-        form_wrap = ttk.Labelframe(upper, text="Inputs", padding=8)
-        upper.add(form_wrap, weight=2)
+        form_wrap = ttk.Labelframe(top_section, text="Inputs", padding=8)
+        form_wrap.pack(fill=tk.BOTH, expand=True)
         self._build_form_panel(form_wrap)
 
-        preview_wrap = ttk.Labelframe(upper, text="Profile Summary", padding=8)
-        upper.add(preview_wrap, weight=1)
-        self.summary_text = self.scrolledtext.ScrolledText(preview_wrap, height=22, wrap=tk.WORD, font=("Consolas", 10))
-        self.summary_text.pack(fill=tk.BOTH, expand=True)
-        self.summary_text.insert(tk.END, "Create or load a profile to begin.\n")
-        self.summary_text.configure(state=tk.DISABLED)
+        self.summary_text = None
 
         bottom_section = ttk.Frame(manual_split)
         manual_split.add(bottom_section, weight=4)
@@ -1236,30 +1228,11 @@ class SchedulerDesktopApp:
 
         ttk.Button(cal, text="Apply Calendar Settings", command=lambda: self._safe_action(self.apply_calendar_settings)).grid(row=1, column=5, padx=6)
 
-        provider_frame = ttk.Labelframe(parent, text="Provider List Management", padding=6)
-        provider_frame.pack(fill="x", pady=(0, 6))
         self.provider_selected_var = self.tk.StringVar(value=self.provider_catalog[0] if self.provider_catalog else "")
         self.provider_new_var = self.tk.StringVar()
-        self.ttk.Label(provider_frame, text="Provider Name").grid(row=0, column=0, sticky="w")
-        self.provider_manage_combo = self.ttk.Combobox(provider_frame, textvariable=self.provider_selected_var, values=self.provider_catalog, state="readonly", width=30)
-        self.provider_manage_combo.grid(row=1, column=0, padx=2)
-        self.ttk.Label(provider_frame, text="New Provider Name").grid(row=0, column=1, sticky="w")
-        self.ttk.Entry(provider_frame, textvariable=self.provider_new_var, width=28).grid(row=1, column=1, padx=2)
-        ttk.Button(provider_frame, text="Add New Provider", command=lambda: self._safe_action(self.add_new_provider)).grid(row=1, column=2, padx=4)
-        ttk.Button(provider_frame, text="Remove Provider", command=lambda: self._safe_action(self.remove_provider)).grid(row=1, column=3, padx=4)
-
         self.provider_avail_weekday_var = self.tk.StringVar(value="Monday")
         self.provider_avail_start_var = self.tk.StringVar(value="0730")
         self.provider_avail_end_var = self.tk.StringVar(value="1800")
-        self.ttk.Label(provider_frame, text="Provider Availability Window").grid(row=2, column=0, sticky="w", pady=(6, 0))
-        self.ttk.Combobox(provider_frame, textvariable=self.provider_avail_weekday_var, values=["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"], state="readonly", width=12).grid(row=3, column=0, padx=2, sticky="w")
-        self.ttk.Combobox(provider_frame, textvariable=self.provider_avail_start_var, values=time_choices, state="readonly", width=10).grid(row=3, column=1, padx=2, sticky="w")
-        self.ttk.Combobox(provider_frame, textvariable=self.provider_avail_end_var, values=time_choices, state="readonly", width=10).grid(row=3, column=2, padx=2, sticky="w")
-        ttk.Button(provider_frame, text="Set Availability Window", command=lambda: self._safe_action(self.set_provider_availability_window)).grid(row=3, column=3, padx=4)
-        self.provider_manage_combo.bind("<<ComboboxSelected>>", lambda _e: self._safe_action(self.render_provider_availability_preview))
-
-        self.provider_preview_canvas = self.tk.Canvas(provider_frame, width=620, height=160, bg="white", highlightthickness=1, highlightbackground="#ced4da")
-        self.provider_preview_canvas.grid(row=4, column=0, columnspan=4, pady=(8, 0), sticky="ew")
 
         appt = ttk.Labelframe(parent, text="Add Appointment", padding=6)
         appt.pack(fill="x", pady=(0, 6))
@@ -1344,6 +1317,8 @@ class SchedulerDesktopApp:
         self.status_var.set(f"Status: Undid manual action: {snapshot.get('action', 'unknown')}")
 
     def _set_text(self, widget, text: str) -> None:
+        if widget is None:
+            return
         widget.configure(state=self.tk.NORMAL)
         widget.delete("1.0", self.tk.END)
         widget.insert(self.tk.END, text)
