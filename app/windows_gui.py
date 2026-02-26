@@ -691,10 +691,14 @@ class SchedulerDesktopApp:
         view_controls.pack(fill=tk.X, expand=True, pady=(4, 0))
         self.grid_mode_var = tk.StringVar(value="Patient Grid")
         self.program_filter_var = tk.StringVar(value="Both")
+        self.patient_view_filter_var = tk.StringVar(value="All Patients")
         ttk.Label(view_controls, text="Grid Mode").pack(side="left")
         ttk.Combobox(view_controls, textvariable=self.grid_mode_var, values=["Patient Grid", "Room Grid", "Provider Grid"], state="readonly", width=16).pack(side="left", padx=4)
         ttk.Label(view_controls, text="Program Filter").pack(side="left", padx=(10, 0))
         ttk.Combobox(view_controls, textvariable=self.program_filter_var, values=["Both", "IOP", "EVAL"], state="readonly", width=10).pack(side="left", padx=4)
+        ttk.Label(view_controls, text="Patient").pack(side="left", padx=(10, 0))
+        self.patient_view_filter_combo = ttk.Combobox(view_controls, textvariable=self.patient_view_filter_var, values=["All Patients"], state="readonly", width=14)
+        self.patient_view_filter_combo.pack(side="left", padx=4)
         ttk.Button(view_controls, text="Apply View", command=lambda: self._safe_action(self.refresh_current_grid_view)).pack(side="left", padx=8)
         ttk.Button(view_controls, text="Export Schedule as PNG", command=lambda: self._safe_action(self.export_view_as_png)).pack(side="left", padx=6)
         ttk.Button(view_controls, text="Export as PowerPoint", command=lambda: self._safe_action(self.export_view_as_pptx)).pack(side="left", padx=6)
@@ -1933,6 +1937,18 @@ class SchedulerDesktopApp:
         if hasattr(self, "provider_preview_canvas"):
             self.render_provider_availability_preview()
 
+    def _refresh_patient_view_filter_options(self, appointments: List[Dict[str, Any]]) -> None:
+        if not hasattr(self, "patient_view_filter_combo"):
+            return
+        patient_ids = sorted(
+            {str(pid) for appt in appointments for pid in appt.get("patients", []) if str(pid).strip()},
+            key=lambda x: (x[:1], int(x[1:]) if x[1:].isdigit() else x),
+        )
+        choices = ["All Patients"] + patient_ids
+        self.patient_view_filter_combo["values"] = choices
+        if self.patient_view_filter_var.get() not in choices:
+            self.patient_view_filter_var.set("All Patients")
+
     def _collect_appointments_for_grid(self, profile: Dict[str, Any], result: Dict[str, Any]) -> List[Dict[str, Any]]:
         request_map = {r["id"]: r for r in profile.get("requests", []) if "id" in r}
         appointments: List[Dict[str, Any]] = []
@@ -1961,6 +1977,10 @@ class SchedulerDesktopApp:
 
     def _build_current_grid_layout(self, profile: Dict[str, Any], result: Dict[str, Any], visible_dates: List[str] | None = None) -> Dict[str, Any]:
         appointments = self._collect_appointments_for_grid(profile, result)
+        self._refresh_patient_view_filter_options(appointments)
+        selected_patient = self.patient_view_filter_var.get().strip() if hasattr(self, "patient_view_filter_var") else "All Patients"
+        if selected_patient and selected_patient != "All Patients":
+            appointments = [a for a in appointments if selected_patient in [str(pid) for pid in a.get("patients", [])]]
         return build_schedule_layout_model(
             appointments,
             profile.get("planning_dates", []),
