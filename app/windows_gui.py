@@ -3379,6 +3379,129 @@ class SchedulerDesktopApp:
         ensured["patients"] = existing_patients
         return ensured
 
+    def preflight_check(
+        self,
+        requirements: List[Dict[str, Any]],
+        providers: List[Dict[str, Any]],
+        rooms: List[Dict[str, Any]],
+        rules: Dict[str, Any],
+        date_range: List[str],
+        settings: Dict[str, Any],
+    ) -> Tuple[bool, List[str], Dict[str, Any]]:
+        issues: List[str] = []
+        details: Dict[str, Any] = {"requirements": []}
+        day_window = settings.get("day_window") or {}
+        day_start = int(day_window.get("start_minute", GRID_START_MINUTE))
+        day_end = int(day_window.get("end_minute", GRID_END_MINUTE))
+
+        date_meta: List[Dict[str, Any]] = []
+        for idx, date_key in enumerate(date_range):
+            dt = date.fromisoformat(date_key)
+            week_num = (idx // 5) + 1 if len(date_range) > 5 else 1
+            date_meta.append({"date_key": date_key, "weekday": dt.weekday(), "week_num": week_num})
+
+        for req in requirements:
+            req_id = str(req.get("id", "(unknown)"))
+            discipline = str(req.get("discipline", "(unknown)"))
+            duration = int(req.get("duration_minutes", GRID_SLOT_MINUTES) or GRID_SLOT_MINUTES)
+            req_weekdays = set(int(w) for w in (req.get("weekdays") or []))
+            req_weeks = set(int(w) for w in (req.get("weeks") or [1, 2, 3]))
+            sessions_per_week = int(req.get("sessions_per_week", 1) or 1)
+
+            applicable_dates = [d for d in date_meta if (not req_weekdays or d["weekday"] in req_weekdays) and (not req_weeks or d["week_num"] in req_weeks)]
+
+            provider_keys = req.get("provider_ids") or ([req.get("provider_id", "any")] if req.get("provider_id", "any") != "any" else [])
+            candidate_providers = []
+            for prov in providers:
+                prov_id = str(prov.get("id", ""))
+                prov_disc = set(str(x) for x in (prov.get("disciplines") or []))
+                if discipline and prov_disc and discipline not in prov_disc:
+                    continue
+                if provider_keys and prov_id not in {str(k) for k in provider_keys}:
+                    continue
+                candidate_providers.append(prov)
+
+            if not candidate_providers:
+                issues.append(f"No eligible providers for {discipline} (req_id={req_id})")
+
+            room_constraint = str(req.get("room_id", "any"))
+            candidate_rooms = []
+            for room in rooms:
+                room_id = str(room.get("id", ""))
+                if room_constraint != "any" and room_id != room_constraint:
+                    continue
+                allowed = set(str(x) for x in (room.get("allowed_disciplines") or []))
+                if discipline and allowed and discipline not in allowed:
+                    continue
+                candidate_rooms.append(room)
+
+            if not candidate_rooms:
+                issues.append(f"No eligible rooms for {discipline} (req_id={req_id})")
+
+            windows = req.get("time_windows") or [{"start_minute": day_start, "end_minute": day_end}]
+            feasible_slots = 0
+            for d in applicable_dates:
+                for w in windows:
+                    s = max(int(w.get("start_minute", day_start)), day_start)
+                    e = min(int(w.get("end_minute", day_end)), day_end)
+                    if e - s < duration:
+                        continue
+                    for prov in candidate_providers:
+                        prov_id = str(prov.get("id", ""))
+                        if not provider_is_available(prov, date_key=d["date_key"], weekday=d["weekday"], start_minute=s, end_minute=s + duration):
+                            continue
+                        for room in candidate_rooms:
+                            room_id = str(room.get("id", ""))
+                            if not room_is_available(rules, room_id=room_id, date_key=d["date_key"], weekday=d["weekday"], start_minute=s, end_minute=s + duration):
+                                continue
+                            feasible_slots += 1
+                            break
+                        if feasible_slots > 0:
+                            break
+                    if feasible_slots > 0:
+                        break
+                if feasible_slots > 0:
+                    break
+
+            if feasible_slots == 0:
+                issues.append(f"No feasible time slots for {discipline} within configured windows (req_id={req_id})")
+
+            # Capacity sanity check per selected week (demand vs candidate provider minutes)
+            if candidate_providers and applicable_dates:
+                for week_num in sorted({d["week_num"] for d in applicable_dates}):
+                    week_dates = [d for d in applicable_dates if d["week_num"] == week_num]
+                    week_demand = duration * max(1, sessions_per_week)
+                    week_capacity = 0
+                    for d in week_dates:
+                        for prov in candidate_providers:
+                            templates = prov.get("templates") or []
+                            for tmpl in templates:
+                                if int(tmpl.get("weekday", -1)) != d["weekday"]:
+                                    continue
+                                for w in tmpl.get("windows", []):
+                                    s = max(int(w.get("start_minute", day_start)), day_start)
+                                    e = min(int(w.get("end_minute", day_end)), day_end)
+                                    if e > s:
+                                        week_capacity += e - s
+                    if week_capacity > 0 and week_demand > week_capacity:
+                        issues.append(
+                            f"Demand exceeds provider capacity for {discipline} week {week_num} (req_id={req_id}): demand={week_demand}m capacity={week_capacity}m"
+                        )
+
+            details["requirements"].append(
+                {
+                    "req_id": req_id,
+                    "discipline": discipline,
+                    "candidate_providers": len(candidate_providers),
+                    "candidate_rooms": len(candidate_rooms),
+                    "feasible_slots": feasible_slots,
+                }
+            )
+
+        ok = len(issues) == 0
+        details["issue_count"] = len(issues)
+        return ok, issues, details
+
     def _update_after_auto_generation(self, profile_template: Dict[str, Any], result: Dict[str, Any], default_program_type: str = "IOP") -> None:
         request_lookup = {r.get("id"): r for r in result.get("requests", [])}
         generated_requests: List[Dict[str, Any]] = []
@@ -3420,6 +3543,20 @@ class SchedulerDesktopApp:
             raise ValueError("Add at least one requirement before auto-generating")
 
         profile_template = self._build_auto_profile_template()
+        ok, issues, _details = self.preflight_check(
+            self.auto_conditions,
+            profile_template.get("providers", []),
+            profile_template.get("rooms", []),
+            self.room_rules,
+            profile_template.get("planning_dates", []),
+            {"day_window": profile_template.get("day_window", {})},
+        )
+        if not ok:
+            lines = ["Preflight feasibility check failed:"] + [f"- {i}" for i in issues[:5]]
+            self._set_text(self.auto_report_text, "\n".join(lines))
+            self.status_var.set("Status: Preflight failed; generation not started")
+            self.messagebox.showwarning("Preflight failed", "\n".join(lines))
+            return
         result = generate_three_week_schedule(
             profile_template=profile_template,
             requirements=self.auto_conditions,
@@ -3506,6 +3643,20 @@ class SchedulerDesktopApp:
         if not self.eval_conditions:
             raise ValueError("Add at least one EVAL requirement before generation")
         profile_template = self._build_eval_profile_template()
+        ok, issues, _details = self.preflight_check(
+            self.eval_conditions,
+            profile_template.get("providers", []),
+            profile_template.get("rooms", []),
+            self.room_rules,
+            profile_template.get("planning_dates", []),
+            {"day_window": profile_template.get("day_window", {})},
+        )
+        if not ok:
+            lines = ["Preflight feasibility check failed:"] + [f"- {i}" for i in issues[:5]]
+            self._set_text(self.eval_report_text, "\n".join(lines))
+            self.status_var.set("Status: Preflight failed; EVAL generation not started")
+            self.messagebox.showwarning("Preflight failed", "\n".join(lines))
+            return
         result = generate_three_week_schedule(
             profile_template=profile_template,
             requirements=self.eval_conditions,
@@ -3533,6 +3684,21 @@ class SchedulerDesktopApp:
         existing = self._existing_assignment_map()
         soft_locked_ids = self._soft_locked_request_ids()
 
+        iop_ok, iop_issues, _iop_details = self.preflight_check(
+            self.auto_conditions,
+            profile_template.get("providers", []),
+            profile_template.get("rooms", []),
+            self.room_rules,
+            profile_template.get("planning_dates", []),
+            {"day_window": profile_template.get("day_window", {})},
+        )
+        if not iop_ok:
+            lines = ["IOP preflight feasibility check failed:"] + [f"- {i}" for i in iop_issues[:5]]
+            self._set_text(self.eval_report_text, "\n".join(lines))
+            self.status_var.set("Status: Preflight failed; combined generation not started")
+            self.messagebox.showwarning("Preflight failed", "\n".join(lines))
+            return
+
         iop_result = generate_three_week_schedule(
             profile_template=profile_template,
             requirements=self.auto_conditions,
@@ -3544,6 +3710,20 @@ class SchedulerDesktopApp:
         if not self.eval_conditions:
             raise ValueError("Add at least one EVAL requirement before combined generation")
         eval_profile_template = self._build_eval_profile_template()
+        eval_ok, eval_issues, _eval_details = self.preflight_check(
+            self.eval_conditions,
+            eval_profile_template.get("providers", []),
+            eval_profile_template.get("rooms", []),
+            self.room_rules,
+            eval_profile_template.get("planning_dates", []),
+            {"day_window": eval_profile_template.get("day_window", {})},
+        )
+        if not eval_ok:
+            lines = ["EVAL preflight feasibility check failed:"] + [f"- {i}" for i in eval_issues[:5]]
+            self._set_text(self.eval_report_text, "\n".join(lines))
+            self.status_var.set("Status: Preflight failed; combined generation not started")
+            self.messagebox.showwarning("Preflight failed", "\n".join(lines))
+            return
         eval_result = generate_three_week_schedule(
             profile_template=eval_profile_template,
             requirements=self.eval_conditions,
