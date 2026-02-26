@@ -540,26 +540,38 @@ class SchedulerDesktopApp:
             self.schedule_snapshot_display_var.set(f"Schedule Snapshot: {snapshot_name}")
 
 
+    def _coerce_max_solve_seconds(self, raw: Any) -> int:
+        try:
+            value = int(raw)
+        except Exception:
+            value = 10
+        return max(1, value)
+
+    def _get_max_solve_seconds(self) -> int:
+        return self._coerce_max_solve_seconds(self.app_settings.get("max_solve_seconds", 10))
+
     def _load_app_settings(self) -> Dict[str, Any]:
         path = Path("data") / "app_settings.json"
         try:
             if not path.exists():
-                return {"schema_version": 1, "default_clinic_config_path": None}
+                return {"schema_version": 1, "default_clinic_config_path": None, "max_solve_seconds": 10}
             payload = json.loads(path.read_text(encoding="utf-8"))
             if not isinstance(payload, dict):
                 raise ValueError("App settings must be a JSON object")
             return {
                 "schema_version": int(payload.get("schema_version", 1) or 1),
                 "default_clinic_config_path": payload.get("default_clinic_config_path") or None,
+                "max_solve_seconds": self._coerce_max_solve_seconds(payload.get("max_solve_seconds", 10)),
             }
         except Exception:
-            return {"schema_version": 1, "default_clinic_config_path": None}
+            return {"schema_version": 1, "default_clinic_config_path": None, "max_solve_seconds": 10}
 
     def _save_app_settings(self) -> None:
         self.app_settings_path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "schema_version": 1,
             "default_clinic_config_path": self.app_settings.get("default_clinic_config_path") or None,
+            "max_solve_seconds": self._coerce_max_solve_seconds(self.app_settings.get("max_solve_seconds", 10)),
         }
         self.app_settings_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
@@ -573,6 +585,15 @@ class SchedulerDesktopApp:
         self.app_settings["default_clinic_config_path"] = path or None
         self._save_app_settings()
         self._update_default_config_display()
+
+    def save_max_solve_seconds(self) -> None:
+        if not hasattr(self, "max_solve_seconds_var"):
+            return
+        value = self._coerce_max_solve_seconds(self.max_solve_seconds_var.get())
+        self.max_solve_seconds_var.set(str(value))
+        self.app_settings["max_solve_seconds"] = value
+        self._save_app_settings()
+        self.status_var.set(f"Status: Max solve time set to {value}s")
 
     def _load_clinic_config_from_path(self, path_raw: str) -> None:
         payload = json.loads(Path(path_raw).read_text(encoding="utf-8"))
@@ -987,6 +1008,14 @@ class SchedulerDesktopApp:
         ttk.Button(default_wrap, text="Load Default Now", command=lambda: self._safe_action(self.load_default_clinic_config_now)).grid(row=2, column=2, sticky="w")
 
         default_wrap.columnconfigure(0, weight=1)
+
+        solve_wrap = ttk.Labelframe(frame, text="Schedule Generation", padding=10)
+        solve_wrap.pack(fill="x", expand=False, pady=(10, 0))
+        self.max_solve_seconds_var = self.tk.StringVar(value=str(self._get_max_solve_seconds()))
+        ttk.Label(solve_wrap, text="Max Solve Time (seconds)").grid(row=0, column=0, sticky="w")
+        ttk.Entry(solve_wrap, textvariable=self.max_solve_seconds_var, width=10).grid(row=1, column=0, sticky="w", pady=(2, 8))
+        ttk.Button(solve_wrap, text="Save Solve Settings", command=lambda: self._safe_action(self.save_max_solve_seconds)).grid(row=1, column=1, sticky="w", padx=(8, 0))
+
         self._update_default_config_display()
 
     def choose_default_clinic_config(self) -> None:
@@ -3306,7 +3335,9 @@ class SchedulerDesktopApp:
             "very high": {"max_backtrack_states": 1500000, "max_candidates_per_request": 20000},
             "maximum": {"max_backtrack_states": 3000000, "max_candidates_per_request": 30000},
         }
-        return mapping.get(effort, mapping["high"])
+        limits = dict(mapping.get(effort, mapping["high"]))
+        limits["max_solve_seconds"] = self._get_max_solve_seconds()
+        return limits
 
     def _build_auto_profile_template(self) -> Dict[str, Any]:
         start = parse_date_parts(self.auto_start_year_var.get(), self.auto_start_month_var.get(), self.auto_start_day_var.get())
@@ -3564,8 +3595,6 @@ class SchedulerDesktopApp:
             solver_limits=self._solver_limits_from_ui(),
             locked_request_ids=self._soft_locked_request_ids(),
         )
-        self._push_manual_undo_snapshot("Generate IOP schedule")
-        self._update_after_auto_generation(profile_template, result)
 
         if not result.get("ok"):
             issues = result.get("report", {}).get("issues", [])
@@ -3573,6 +3602,9 @@ class SchedulerDesktopApp:
             self._set_text(self.auto_report_text, text)
             self.status_var.set("Status: Auto-generation failed")
             return
+
+        self._push_manual_undo_snapshot("Generate IOP schedule")
+        self._update_after_auto_generation(profile_template, result)
 
         diff = result.get("diff", {})
         bottlenecks = result.get("bottlenecks", [])
@@ -3602,6 +3634,7 @@ class SchedulerDesktopApp:
         )
         self._push_manual_undo_snapshot("Auto reconfigure IOP")
         self._update_after_auto_generation(profile_template, result)
+
         diff = result.get("diff", {})
         self._set_text(
             self.auto_report_text,
@@ -3664,10 +3697,17 @@ class SchedulerDesktopApp:
             solver_limits=self._solver_limits_from_ui(),
             locked_request_ids=self._soft_locked_request_ids(),
         )
+        if not result.get("ok"):
+            issues = result.get("report", {}).get("issues", [])
+            lines = ["EVAL generation failed."] + [f"- {i}" for i in issues[:25] or ["No detailed bottlenecks available."]]
+            self._set_text(self.eval_report_text, "\n".join(lines))
+            self.status_var.set("Status: EVAL generation failed")
+            return
+
         self._push_manual_undo_snapshot("Generate EVAL schedule")
         self._update_after_auto_generation(profile_template, result, default_program_type="EVAL")
         lines = [
-            "EVAL generation completed." if result.get("ok") else "EVAL generation failed.",
+            "EVAL generation completed.",
             f"Assignments: {len(result.get('assignments', {}))}",
             f"Moved: {result.get('diff', {}).get('moved', 0)} | Added: {result.get('diff', {}).get('added', 0)}",
         ]
@@ -3731,6 +3771,19 @@ class SchedulerDesktopApp:
             solver_limits=self._solver_limits_from_ui(),
             locked_request_ids=soft_locked_ids,
         )
+
+        if not iop_result.get("ok"):
+            issues = iop_result.get("report", {}).get("issues", [])
+            lines = ["Combined generation failed during IOP solve."] + [f"- {i}" for i in issues[:25] or ["No detailed bottlenecks available."]]
+            self._set_text(self.eval_report_text, "\n".join(lines))
+            self.status_var.set("Status: Combined generation failed")
+            return
+        if not eval_result.get("ok"):
+            issues = eval_result.get("report", {}).get("issues", [])
+            lines = ["Combined generation failed during EVAL solve."] + [f"- {i}" for i in issues[:25] or ["No detailed bottlenecks available."]]
+            self._set_text(self.eval_report_text, "\n".join(lines))
+            self.status_var.set("Status: Combined generation failed")
+            return
 
         merged_requests = list(iop_result.get("requests", [])) + list(eval_result.get("requests", []))
         merged_assignments = {**iop_result.get("assignments", {}), **eval_result.get("assignments", {})}
@@ -3801,6 +3854,7 @@ class SchedulerDesktopApp:
             "default_settings": {
                 "day_start": self.day_start_var.get() if hasattr(self, "day_start_var") else "0730",
                 "day_end": self.day_end_var.get() if hasattr(self, "day_end_var") else "1800",
+                "max_solve_seconds": self._get_max_solve_seconds(),
             },
         }
 
@@ -3846,6 +3900,13 @@ class SchedulerDesktopApp:
             self.revert_room_rules_editor()
         if hasattr(self, "provider_search_list"):
             self.refresh_provider_profile_list()
+        default_settings = payload.get("default_settings") if isinstance(payload.get("default_settings"), dict) else {}
+        if default_settings:
+            self.app_settings["max_solve_seconds"] = self._coerce_max_solve_seconds(default_settings.get("max_solve_seconds", self._get_max_solve_seconds()))
+            self._save_app_settings()
+            if hasattr(self, "max_solve_seconds_var"):
+                self.max_solve_seconds_var.set(str(self._get_max_solve_seconds()))
+
         if self.loaded_profile:
             self.loaded_profile["clinic_config"] = {
                 "config_id": payload.get("config_id", "current-clinic-config"),

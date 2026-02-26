@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -173,6 +174,7 @@ class ScheduleEngine:
         locked_request_ids: Optional[set[str]] = None,
         max_backtrack_states: Optional[int] = None,
         max_candidates_per_request: Optional[int] = None,
+        max_solve_seconds: Optional[int] = None,
     ) -> Dict[str, Assignment]:
         previous_assignments = previous_assignments or {}
         locked_request_ids = locked_request_ids or set()
@@ -206,6 +208,7 @@ class ScheduleEngine:
             candidate_map=candidate_map,
             previous_assignments=previous_assignments,
             max_backtrack_states=max_backtrack_states,
+            max_solve_seconds=max_solve_seconds,
             rooms=rooms,
             providers=providers,
             date_key=date_key,
@@ -318,6 +321,7 @@ class ScheduleEngine:
         candidate_map: Dict[str, List[Assignment]],
         previous_assignments: Dict[str, Assignment],
         max_backtrack_states: Optional[int],
+        max_solve_seconds: Optional[int],
         rooms: Sequence[Room],
         providers: Sequence[Provider],
         date_key: str,
@@ -326,6 +330,10 @@ class ScheduleEngine:
     ) -> Dict[str, Assignment]:
         backtrack_limit = max_backtrack_states or MAX_BACKTRACK_STATES
         backtrack_limit = max(1000, min(int(backtrack_limit), MAX_BACKTRACK_STATES_HARD_CAP))
+        solve_timeout_seconds = None
+        if max_solve_seconds is not None:
+            solve_timeout_seconds = max(1, int(max_solve_seconds))
+        solve_started_at = time.perf_counter()
         request_by_id = {r.id: r for r in requests}
         sorted_ids = sorted([r.id for r in requests], key=lambda rid: len(candidate_map[rid]))
         fixed_assignments = [a for rid, a in previous_assignments.items() if rid not in request_by_id]
@@ -397,6 +405,10 @@ class ScheduleEngine:
             states += 1
             if states > backtrack_limit:
                 raise UnschedulableError("Search limit reached while scheduling. Narrow windows or increase solver effort.")
+            if solve_timeout_seconds is not None and (time.perf_counter() - solve_started_at) > solve_timeout_seconds:
+                raise UnschedulableError(
+                    f"No solution found within {solve_timeout_seconds}s (timed out). Attempts: {states}."
+                )
             if index == len(sorted_ids):
                 for provider in provider_by_id.values():
                     if not _has_lunch_slot(provider, assigned):
