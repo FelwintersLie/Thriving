@@ -717,6 +717,8 @@ class SchedulerDesktopApp:
         ttk.Button(arrow_frame, text="▲", width=3, command=lambda: self.grid_canvas.yview_scroll(-6, "units")).pack(pady=4)
         ttk.Button(arrow_frame, text="▼", width=3, command=lambda: self.grid_canvas.yview_scroll(6, "units")).pack(pady=4)
 
+        self._build_manual_calendar_panel(bottom_section)
+
         self.legend_var = tk.StringVar(value="Legend: Add appointments to visualize schedule.")
         ttk.Label(bottom_section, textvariable=self.legend_var).pack(anchor="w", pady=(6, 0))
 
@@ -1392,28 +1394,12 @@ class SchedulerDesktopApp:
         self.day_choices = [f"{d:02d}" for d in range(1, 32)]
         time_choices = military_time_choices()
 
-        cal = ttk.Labelframe(parent, text="Calendar Settings", padding=6)
-        cal.pack(fill="x", pady=(0, 6))
-
         self.cal_year_var = self.tk.StringVar(value=str(current.year))
         self.cal_month_var = self.tk.StringVar(value=f"{current.month:02d}")
         self.cal_day_var = self.tk.StringVar(value=f"{current.day:02d}")
         self.day_start_var = self.tk.StringVar(value="0730")
         self.day_end_var = self.tk.StringVar(value="1800")
-
-        self.ttk.Label(cal, text="Year").grid(row=0, column=0, sticky="w")
-        self.ttk.Combobox(cal, textvariable=self.cal_year_var, values=self.year_choices, state="readonly", width=8).grid(row=1, column=0, padx=2)
-        self.ttk.Label(cal, text="Month").grid(row=0, column=1, sticky="w")
-        self.ttk.Combobox(cal, textvariable=self.cal_month_var, values=self.month_choices, state="readonly", width=6).grid(row=1, column=1, padx=2)
-        self.ttk.Label(cal, text="Day").grid(row=0, column=2, sticky="w")
-        self.ttk.Combobox(cal, textvariable=self.cal_day_var, values=self.day_choices, state="readonly", width=6).grid(row=1, column=2, padx=2)
-
-        self.ttk.Label(cal, text="Day Start (HHMM)").grid(row=0, column=3, sticky="w")
-        self.ttk.Combobox(cal, textvariable=self.day_start_var, values=time_choices, state="readonly", width=10).grid(row=1, column=3, padx=2)
-        self.ttk.Label(cal, text="Day End (HHMM)").grid(row=0, column=4, sticky="w")
-        self.ttk.Combobox(cal, textvariable=self.day_end_var, values=time_choices, state="readonly", width=10).grid(row=1, column=4, padx=2)
-
-        ttk.Button(cal, text="Apply Calendar Settings", command=lambda: self._safe_action(self.apply_calendar_settings)).grid(row=1, column=5, padx=6)
+        self.manual_active_date_var = self.tk.StringVar(value=date_to_key(current))
 
         self.provider_selected_var = self.tk.StringVar(value=self.provider_catalog[0] if self.provider_catalog else "")
         self.provider_new_var = self.tk.StringVar()
@@ -1437,6 +1423,7 @@ class SchedulerDesktopApp:
         self.ttk.Label(appt, text="Date").grid(row=0, column=0, sticky="w")
         self.appt_date_combo = self.ttk.Combobox(appt, textvariable=self.appt_date_var, values=[date_to_key(current)], state="readonly", width=14)
         self.appt_date_combo.grid(row=1, column=0, padx=2)
+        self.appt_date_combo.bind("<<ComboboxSelected>>", lambda _e: self._safe_action(self._on_active_date_changed_from_appt))
 
         self.ttk.Label(appt, text="Patient ID").grid(row=0, column=1, sticky="w")
         self.ttk.Combobox(appt, textvariable=self.appt_patient_var, values=PATIENT_ID_CHOICES, state="readonly", width=10).grid(row=1, column=1, padx=2)
@@ -1468,6 +1455,25 @@ class SchedulerDesktopApp:
         ttk.Button(appt, text="Add Appointment", command=lambda: self._safe_action(self.add_appointment)).grid(row=1, column=9, padx=6)
         ttk.Button(appt, text="Delete Appointment", command=lambda: self._safe_action(self.delete_selected_appointment)).grid(row=1, column=10, padx=6)
         ttk.Button(appt, text="Undo Manual Action", command=lambda: self._safe_action(self.undo_manual_action)).grid(row=1, column=11, padx=6)
+
+    def _build_manual_calendar_panel(self, parent) -> None:
+        ttk = self.ttk
+        cal = ttk.Labelframe(parent, text="Calendar Settings", padding=6)
+        cal.pack(fill="x", pady=(6, 0))
+
+        ttk.Label(cal, text="Month").grid(row=0, column=0, sticky="w")
+        ttk.Combobox(cal, textvariable=self.cal_month_var, values=self.month_choices, state="readonly", width=6).grid(row=1, column=0, padx=2)
+        ttk.Label(cal, text="Day").grid(row=0, column=1, sticky="w")
+        ttk.Combobox(cal, textvariable=self.cal_day_var, values=self.day_choices, state="readonly", width=6).grid(row=1, column=1, padx=2)
+        ttk.Label(cal, text="Year").grid(row=0, column=2, sticky="w")
+        ttk.Combobox(cal, textvariable=self.cal_year_var, values=self.year_choices, state="readonly", width=8).grid(row=1, column=2, padx=2)
+        ttk.Button(cal, text="Go To Date", command=lambda: self._safe_action(self.apply_calendar_settings)).grid(row=1, column=3, padx=6)
+
+    def _on_active_date_changed_from_appt(self) -> None:
+        if hasattr(self, "manual_active_date_var"):
+            self.manual_active_date_var.set(self.appt_date_var.get().strip())
+        if self.loaded_profile and self.last_result:
+            self._render_patient_grid(self.loaded_profile, self.last_result)
 
     def _safe_action(self, fn) -> None:
         try:
@@ -2175,6 +2181,9 @@ class SchedulerDesktopApp:
         selected_patient = self.patient_view_filter_var.get().strip() if hasattr(self, "patient_view_filter_var") else "All Patients"
         if selected_patient and selected_patient != "All Patients":
             appointments = [a for a in appointments if selected_patient in [str(pid) for pid in a.get("patients", [])]]
+        active_date = self.manual_active_date_var.get().strip() if hasattr(self, "manual_active_date_var") else ""
+        if active_date and not visible_dates:
+            visible_dates = [active_date]
         return build_schedule_layout_model(
             appointments,
             profile.get("planning_dates", []),
@@ -2357,20 +2366,25 @@ class SchedulerDesktopApp:
 
     def apply_calendar_settings(self) -> None:
         profile = self._require_profile()
-        self._push_manual_undo_snapshot("Apply calendar settings")
-        start_date = parse_date_parts(self.cal_year_var.get(), self.cal_month_var.get(), self.cal_day_var.get())
-        start_minute = parse_time_input(self.day_start_var.get())
-        end_minute = parse_time_input(self.day_end_var.get())
-        if end_minute <= start_minute:
-            raise ValueError("Day end must be after day start")
+        selected_date = parse_date_parts(self.cal_year_var.get(), self.cal_month_var.get(), self.cal_day_var.get())
+        selected_key = date_to_key(selected_date)
 
-        profile["date_key"] = date_to_key(start_date)
-        profile["planning_dates"] = planning_dates(start_date)
-        profile["weekday"] = start_date.weekday()
-        profile["day_window"] = {"start_minute": start_minute, "end_minute": end_minute}
-        self._sync_profile_resources(profile)
+        planning = list(profile.get("planning_dates", []))
+        if selected_key not in planning:
+            planning.append(selected_key)
+            planning = sorted(dict.fromkeys(planning))
+            profile["planning_dates"] = planning
+
+        profile["date_key"] = selected_key
+        profile["weekday"] = selected_date.weekday()
+        self.manual_active_date_var.set(selected_key)
+        self.appt_date_var.set(selected_key)
+        self._refresh_date_dropdowns()
         validate_profile(profile)
-        self.status_var.set("Status: Calendar settings applied")
+        if self.last_result is None:
+            self.last_result = build_live_result_from_profile(profile)
+        self._render_patient_grid(profile, self.last_result)
+        self.status_var.set(f"Status: Showing schedule for {selected_key}")
         self._refresh_profile_preview()
 
     def add_new_provider(self) -> None:
@@ -2535,7 +2549,8 @@ class SchedulerDesktopApp:
         room_id = self.appt_room_var.get().strip()
         mode = self.appt_mode_var.get().strip().lower()
         discipline = self.appt_discipline_var.get().strip()
-        date_key = self.appt_date_var.get().strip()
+        date_key = (self.manual_active_date_var.get().strip() if hasattr(self, "manual_active_date_var") else self.appt_date_var.get().strip())
+        self.appt_date_var.set(date_key)
         program_type = self.appt_program_var.get().strip() or ("EVAL" if patient_id.startswith("E") else "IOP")
 
         if date_key not in profile.get("planning_dates", []):
