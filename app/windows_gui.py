@@ -34,7 +34,7 @@ from app.persistence import (
     save_room_discipline_profile,
     save_room_rules,
 )
-from app.profile_io import load_profile, save_profile, validate_profile
+from app.profile_io import validate_profile
 from app.provider_catalog import normalize_provider_catalog, provider_is_available
 from app.room_rules import is_room_discipline_compatible, room_is_available, room_preference_tier
 from app.windows_program import save_json
@@ -519,7 +519,6 @@ class SchedulerDesktopApp:
                 self.active_clinic_config = dict(self.loaded_profile.get("clinic_config") or {})
             self._sync_profile_resources(self.loaded_profile)
             self.status_var.set("Status: Restored last profile")
-            self.profile_var.set("Profile: restored from data/last_profile.json")
             self._refresh_profile_preview()
 
     def _update_loaded_artifact_status(self) -> None:
@@ -627,13 +626,11 @@ class SchedulerDesktopApp:
         controls.pack(fill=tk.X)
         buttons = [
             ("Health Check", self.run_health_check),
-            ("New Blank Profile", self.new_blank_profile),
-            ("Load Profile", self.load_profile_from_file),
+            ("New Session", self.new_blank_session),
             ("Load Clinic Config", self.load_clinic_config),
             ("Load Schedule Snapshot", self.load_schedule_snapshot),
             ("Generate Day", self.generate_from_loaded_profile),
             ("Export Schedule", self.export_schedule),
-            ("Save Profile", self.save_current_profile),
             ("Save Clinic Config", self.save_clinic_config),
             ("Save Schedule Snapshot", self.save_schedule_snapshot),
         ]
@@ -642,8 +639,6 @@ class SchedulerDesktopApp:
 
         self.status_var = tk.StringVar(value="Status: Ready")
         ttk.Label(controls, textvariable=self.status_var).grid(row=1, column=0, columnspan=12, sticky="w", padx=6)
-        self.profile_var = tk.StringVar(value="Profile: (none loaded)")
-        ttk.Label(controls, textvariable=self.profile_var).grid(row=2, column=0, columnspan=12, sticky="w", padx=6)
 
         artifact_bar = ttk.Frame(main, padding=(0, 2))
         artifact_bar.pack(fill=tk.X, padx=2, pady=(2, 4))
@@ -2331,6 +2326,9 @@ class SchedulerDesktopApp:
         self.status_var.set(f"Status: Health Check {'PASS' if result['all_ok'] else 'FAIL'}")
         self._set_text(self.summary_text, json.dumps(result, indent=2))
 
+    def new_blank_session(self) -> None:
+        self.new_blank_profile()
+
     def new_blank_profile(self) -> None:
         today = datetime.utcnow().date()
         date_keys = planning_dates(today)
@@ -2348,32 +2346,14 @@ class SchedulerDesktopApp:
         self.loaded_profile_path = None
         self.manual_undo_stack = []
         self.selected_request_id = None
-        self.profile_var.set("Profile: unsaved")
         self.active_schedule_snapshot = None
         self._update_loaded_artifact_status()
-        self.status_var.set("Status: Created blank profile")
+        self.status_var.set("Status: Created new blank session")
         self._refresh_profile_preview()
 
     def load_profile_from_file(self) -> None:
-        path_raw = self.filedialog.askopenfilename(title="Select profile JSON", filetypes=[("JSON files", "*.json")])
-        if not path_raw:
-            return
-        path = Path(path_raw)
-        self.loaded_profile = load_profile(path)
-        if "planning_dates" not in self.loaded_profile:
-            start = date.fromisoformat(self.loaded_profile.get("date_key", date_to_key(datetime.utcnow().date())))
-            self.loaded_profile["planning_dates"] = planning_dates(start)
-        self.loaded_profile_path = path
-        self.manual_undo_stack = []
-        self.selected_request_id = None
-        self._sync_profile_resources(self.loaded_profile)
-        self.profile_var.set(f"Profile: {path}")
-        self.active_schedule_snapshot = None
-        if isinstance(self.loaded_profile.get("clinic_config"), dict):
-            self.active_clinic_config = dict(self.loaded_profile.get("clinic_config") or {})
-        self._update_loaded_artifact_status()
-        self.status_var.set("Status: Profile loaded")
-        self._refresh_profile_preview()
+        # Legacy profile entrypoint retained for compatibility.
+        self.load_schedule_snapshot()
 
     def apply_calendar_settings(self) -> None:
         profile = self._require_profile()
@@ -3553,28 +3533,8 @@ class SchedulerDesktopApp:
         self.status_var.set(f"Status: Schedule snapshot loaded from {path_raw}")
 
     def save_current_profile(self) -> None:
-        profile = self._require_profile()
-        default = self.loaded_profile_path or (Path("profiles") / "profile.json")
-        path_raw = self.filedialog.asksaveasfilename(
-            title="Save current profile",
-            defaultextension=".json",
-            initialfile=default.name,
-            initialdir=str(default.parent),
-            filetypes=[("JSON files", "*.json")],
-        )
-        if not path_raw:
-            return
-        path = Path(path_raw)
-        save_profile(path, profile)
-        self.loaded_profile_path = path
-        self.profile_var.set(f"Profile: {path}")
-        if isinstance(profile.get("clinic_config"), dict):
-            self.active_clinic_config = dict(profile.get("clinic_config") or {})
-            self._update_loaded_artifact_status()
-        self.status_var.set("Status: Profile saved")
-        self._autosave_profile()
-        if hasattr(self, "provider_preview_canvas"):
-            self.render_provider_availability_preview()
+        # Legacy profile entrypoint retained for compatibility.
+        self.save_schedule_snapshot()
 
     def generate_from_loaded_profile(self) -> None:
         profile = self._require_profile()
