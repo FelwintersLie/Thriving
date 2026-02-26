@@ -611,8 +611,14 @@ class SchedulerDesktopApp:
         notebook.add(room_rules_tab, text="Room Rules")
         room_rules_content = getattr(room_rules_tab, "_scroll_content")
 
-        upper = ttk.Panedwindow(manual_content, orient=tk.HORIZONTAL)
-        upper.pack(fill=tk.BOTH, expand=True, pady=(0, 8))
+        manual_split = ttk.Panedwindow(manual_content, orient=tk.VERTICAL)
+        manual_split.pack(fill=tk.BOTH, expand=True, pady=(0, 8))
+
+        top_section = ttk.Frame(manual_split)
+        manual_split.add(top_section, weight=3)
+
+        upper = ttk.Panedwindow(top_section, orient=tk.HORIZONTAL)
+        upper.pack(fill=tk.BOTH, expand=True)
 
         form_wrap = ttk.Labelframe(upper, text="Inputs", padding=8)
         upper.add(form_wrap, weight=2)
@@ -625,7 +631,10 @@ class SchedulerDesktopApp:
         self.summary_text.insert(tk.END, "Create or load a profile to begin.\n")
         self.summary_text.configure(state=tk.DISABLED)
 
-        grid_wrap = ttk.Labelframe(manual_content, text="Patient Schedule Grid", padding=8)
+        bottom_section = ttk.Frame(manual_split)
+        manual_split.add(bottom_section, weight=4)
+
+        grid_wrap = ttk.Labelframe(bottom_section, text="Patient Schedule Grid", padding=8)
         grid_wrap.pack(fill=tk.BOTH, expand=True)
 
         grid_container = ttk.Frame(grid_wrap)
@@ -650,9 +659,9 @@ class SchedulerDesktopApp:
         ttk.Button(arrow_frame, text="▼", width=3, command=lambda: self.grid_canvas.yview_scroll(6, "units")).pack(pady=4)
 
         self.legend_var = tk.StringVar(value="Legend: Add appointments to visualize schedule.")
-        ttk.Label(manual_content, textvariable=self.legend_var).pack(anchor="w", pady=(6, 0))
+        ttk.Label(bottom_section, textvariable=self.legend_var).pack(anchor="w", pady=(6, 0))
 
-        view_controls = ttk.Frame(manual_content)
+        view_controls = ttk.Frame(bottom_section)
         view_controls.pack(fill=tk.X, expand=True, pady=(4, 0))
         self.grid_mode_var = tk.StringVar(value="Patient Grid")
         self.program_filter_var = tk.StringVar(value="Both")
@@ -663,6 +672,13 @@ class SchedulerDesktopApp:
         ttk.Button(view_controls, text="Apply View", command=lambda: self._safe_action(self.refresh_current_grid_view)).pack(side="left", padx=8)
         ttk.Button(view_controls, text="Export Schedule as PNG", command=lambda: self._safe_action(self.export_view_as_png)).pack(side="left", padx=6)
         ttk.Button(view_controls, text="Export as PowerPoint", command=lambda: self._safe_action(self.export_view_as_pptx)).pack(side="left", padx=6)
+
+        def _init_manual_split_position():
+            total_h = manual_split.winfo_height()
+            if total_h > 200:
+                manual_split.sashpos(0, int(total_h * 0.45))
+
+        manual_split.after_idle(_init_manual_split_position)
 
         self._build_auto_generator_tab(auto_content)
         self._build_eval_generator_tab(eval_content)
