@@ -386,6 +386,7 @@ def export_layout_to_xlsx(layout: Dict[str, Any], out_path: Path, title: str = "
         if text.get("kind") == "appointment" and text.get("request_id"):
             appointment_text_by_id[str(text.get("request_id"))] = str(text.get("text", ""))
 
+    header_text_by_col: Dict[int, str] = {}
     for text in layout.get("texts", []):
         content = str(text.get("text", "")).strip()
         if not content:
@@ -395,9 +396,12 @@ def export_layout_to_xlsx(layout: Dict[str, Any], out_path: Path, title: str = "
         if y <= header_h:
             row = 1
             col = 1 if x <= time_col_w else 2 + int((x - time_col_w) // max(1, col_w))
-            cell = ws.cell(row=row, column=max(1, min(data_cols + 1, col)))
+            col = max(1, min(data_cols + 1, col))
+            cell = ws.cell(row=row, column=col)
             cell.value = content
             cell.font = Font(bold=bool(text.get("bold", False)), color=_hex_to_argb(text.get("fill", "#000000")))
+            if col > 1:
+                header_text_by_col[col] = content
             continue
         if x <= time_col_w:
             row = 2 + int((y - header_h) // max(1, row_h))
@@ -406,6 +410,7 @@ def export_layout_to_xlsx(layout: Dict[str, Any], out_path: Path, title: str = "
                 cell.value = content
                 cell.font = Font(bold=bool(text.get("bold", False)), color=_hex_to_argb(text.get("fill", "#000000")))
 
+    rooms_by_col: Dict[int, set[str]] = {}
     for rect in layout.get("rectangles", []):
         if rect.get("kind") != "appointment":
             continue
@@ -418,6 +423,9 @@ def export_layout_to_xlsx(layout: Dict[str, Any], out_path: Path, title: str = "
         y1 = int(rect.get("y1", 0))
 
         col = max(2, 2 + int((x0 - time_col_w) // max(1, col_w)))
+        lines = [ln.strip() for ln in content.splitlines() if ln.strip()]
+        if len(lines) >= 2:
+            rooms_by_col.setdefault(col, set()).add(lines[1])
         row_start = 2 + max(0, int((y0 - header_h) // max(1, row_h)))
         row_end = 1 + max(1, int((y1 - header_h) // max(1, row_h)))
         row_start = max(2, min(time_rows + 1, row_start))
@@ -430,6 +438,13 @@ def export_layout_to_xlsx(layout: Dict[str, Any], out_path: Path, title: str = "
         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
         cell.font = Font(color="FF1B263B")
         cell.fill = PatternFill(fill_type="solid", fgColor=_hex_to_argb(rect.get("fill", "#ffffff")))
+
+
+    for col, base_header in header_text_by_col.items():
+        rooms = sorted(rooms_by_col.get(col, set()))
+        if rooms:
+            ws.cell(row=1, column=col).value = f"{base_header}\nRooms: {', '.join(rooms)}"
+            ws.cell(row=1, column=col).alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
     if title:
         ws["A1"].comment = None
