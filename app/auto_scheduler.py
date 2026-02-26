@@ -5,7 +5,6 @@ from datetime import date, timedelta
 from typing import Any, Dict, Iterable, List, Tuple
 
 from app.api_server import handle_generate
-from app.scheduler import GenerationCancelledError
 
 SLOT_MINUTES = 15
 MAX_REQUIREMENTS = 300
@@ -281,8 +280,6 @@ def _solve_multiday(
         try:
             result = handle_generate(payload)
             assignments.update(result.get("assignments", {}))
-        except GenerationCancelledError:
-            raise
         except Exception as exc:
             # collect per-request failure reasons to keep report actionable
             reason = str(exc)
@@ -397,24 +394,13 @@ def generate_three_week_schedule(
     )
 
     hard_requests = _apply_requirement_filters(expanded_requests, source_by_request_id, hard_only=True)
-    try:
-        hard_assignments, hard_bottlenecks = _solve_multiday(
+    hard_assignments, hard_bottlenecks = _solve_multiday(
         profile_template=profile_template,
         requests=hard_requests,
         previous_assignments=previous_assignments,
         solver_limits=solver_limits,
         locked_request_ids=locked_request_ids,
     )
-    except GenerationCancelledError as exc:
-        return {
-            "ok": False,
-            "cancelled": True,
-            "assignments": {},
-            "requests": expanded_requests,
-            "bottlenecks": [],
-            "report": {"ok": False, "issues": [str(exc)]},
-            "diff": {"unchanged": 0, "moved": 0, "added": 0, "removed": 0, "by_date": {}},
-        }
 
     if hard_bottlenecks:
         return {
@@ -436,24 +422,13 @@ def generate_three_week_schedule(
     merged_assignments = dict(hard_assignments)
     soft_bottlenecks: List[Bottleneck] = []
     if soft_requests:
-        try:
-            soft_assignments, soft_bottlenecks = _solve_multiday(
-                profile_template=profile_template,
-                requests=soft_requests,
-                previous_assignments=previous_assignments,
-                solver_limits=solver_limits,
-                locked_request_ids=locked_request_ids,
-            )
-        except GenerationCancelledError as exc:
-            return {
-                "ok": False,
-                "cancelled": True,
-                "assignments": {},
-                "requests": expanded_requests,
-                "bottlenecks": [],
-                "report": {"ok": False, "issues": [str(exc)]},
-                "diff": {"unchanged": 0, "moved": 0, "added": 0, "removed": 0, "by_date": {}},
-            }
+        soft_assignments, soft_bottlenecks = _solve_multiday(
+            profile_template=profile_template,
+            requests=soft_requests,
+            previous_assignments=previous_assignments,
+            solver_limits=solver_limits,
+            locked_request_ids=locked_request_ids,
+        )
         merged_assignments.update(soft_assignments)
 
     diff = diff_assignments(previous_assignments or {}, merged_assignments)

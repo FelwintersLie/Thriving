@@ -4,7 +4,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 SLOT_MINUTES = 15
 
@@ -151,10 +151,6 @@ class UnschedulableError(RuntimeError):
     pass
 
 
-class GenerationCancelledError(RuntimeError):
-    pass
-
-
 class ScheduleEngine:
     """
     Constraint-based scheduler with composable hard/soft rules and diagnostic logging.
@@ -179,8 +175,6 @@ class ScheduleEngine:
         max_backtrack_states: Optional[int] = None,
         max_candidates_per_request: Optional[int] = None,
         max_solve_seconds: Optional[int] = None,
-        cancel_event: Any = None,
-        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> Dict[str, Assignment]:
         previous_assignments = previous_assignments or {}
         locked_request_ids = locked_request_ids or set()
@@ -215,8 +209,6 @@ class ScheduleEngine:
             previous_assignments=previous_assignments,
             max_backtrack_states=max_backtrack_states,
             max_solve_seconds=max_solve_seconds,
-            cancel_event=cancel_event,
-            progress_callback=progress_callback,
             rooms=rooms,
             providers=providers,
             date_key=date_key,
@@ -330,8 +322,6 @@ class ScheduleEngine:
         previous_assignments: Dict[str, Assignment],
         max_backtrack_states: Optional[int],
         max_solve_seconds: Optional[int],
-        cancel_event: Any,
-        progress_callback: Optional[Callable[[Dict[str, Any]], None]],
         rooms: Sequence[Room],
         providers: Sequence[Provider],
         date_key: str,
@@ -344,37 +334,10 @@ class ScheduleEngine:
         if max_solve_seconds is not None:
             solve_timeout_seconds = max(1, int(max_solve_seconds))
         solve_started_at = time.perf_counter()
-        last_progress_emit = 0.0
-
         request_by_id = {r.id: r for r in requests}
-        all_request_ids = [r.id for r in requests]
+        sorted_ids = sorted([r.id for r in requests], key=lambda rid: len(candidate_map[rid]))
         fixed_assignments = [a for rid, a in previous_assignments.items() if rid not in request_by_id]
         room_by_id = {room.id: room for room in rooms}
-
-        def _emit_progress(state_count: int, req_id: str | None = None, *, backtracks: int = 0, zero_option_failures: int = 0) -> None:
-            nonlocal last_progress_emit
-            if progress_callback is None:
-                return
-            now = time.perf_counter()
-            if now - last_progress_emit < 0.12:
-                return
-            payload: Dict[str, Any] = {
-                "elapsed_seconds": now - solve_started_at,
-                "attempts": int(state_count),
-                "nodes_visited": int(state_count),
-                "backtracks": int(backtracks),
-                "zero_option_failures": int(zero_option_failures),
-            }
-            if req_id is not None and req_id in request_by_id:
-                req = request_by_id[req_id]
-                payload["requirement_id"] = req.id
-                payload["discipline"] = req.discipline
-                payload["patients"] = list(req.patient_ids)
-            try:
-                progress_callback(payload)
-            except Exception:
-                pass
-            last_progress_emit = now
 
         def overlaps(a: Assignment, b: Assignment) -> bool:
             return not (a.end_minute <= b.start_minute or a.start_minute >= b.end_minute)
@@ -416,10 +379,7 @@ class ScheduleEngine:
         best: Optional[Dict[str, Assignment]] = None
         best_score: Optional[int] = None
         states = 0
-        backtracks = 0
-        zero_option_failures = 0
         conflict_logs = 0
-        feasible_cache: Dict[Tuple[Tuple[Tuple[str, str, str, int, int], ...], str], List[Assignment]] = {}
 
         provider_by_id = {p.id: p for p in providers}
 
@@ -440,43 +400,8 @@ class ScheduleEngine:
                     return True
             return False
 
-        def _state_key(assigned: Dict[str, Assignment]) -> Tuple[Tuple[str, str, str, int, int], ...]:
-            return tuple(sorted((rid, a.provider_id, a.room_id, int(a.start_minute), int(a.end_minute)) for rid, a in assigned.items()))
-
-        def _window_width(req: SessionRequest) -> int:
-            if req.preferred_window is not None:
-                return max(0, int(req.preferred_window.end_minute) - int(req.preferred_window.start_minute))
-            return int(day_window.end_minute) - int(day_window.start_minute)
-
-        def _feasible_options(req_id: str, assigned: Dict[str, Assignment], key: Tuple[Tuple[str, str, str, int, int], ...]) -> List[Assignment]:
-            cache_key = (key, req_id)
-            if cache_key in feasible_cache:
-                return feasible_cache[cache_key]
-            opts = [opt for opt in candidate_map[req_id] if hard_conflict(req_id, opt, assigned) is None]
-            feasible_cache[cache_key] = opts
-            return opts
-
-        def _select_next_requirement(assigned: Dict[str, Assignment], key: Tuple[Tuple[str, str, str, int, int], ...]) -> Tuple[str | None, List[Assignment]]:
-            best_req_id: str | None = None
-            best_opts: List[Assignment] = []
-            best_key: Tuple[int, int, int, int] | None = None
-            for rid in all_request_ids:
-                if rid in assigned:
-                    continue
-                req = request_by_id[rid]
-                opts = _feasible_options(rid, assigned, key)
-                constrained_provider = bool(req.provider_id or req.provider_ids)
-                tie_key = (len(opts), 0 if constrained_provider else 1, _window_width(req), -int(req.duration_minutes))
-                if best_key is None or tie_key < best_key:
-                    best_key = tie_key
-                    best_req_id = rid
-                    best_opts = opts
-                    if len(opts) == 0:
-                        break
-            return best_req_id, best_opts
-
-        def dfs(assigned: Dict[str, Assignment], running_penalty: int) -> None:
-            nonlocal best, best_score, states, conflict_logs, backtracks, zero_option_failures
+        def dfs(index: int, assigned: Dict[str, Assignment], running_penalty: int) -> None:
+            nonlocal best, best_score, states, conflict_logs
             states += 1
             if states > backtrack_limit:
                 raise UnschedulableError("Search limit reached while scheduling. Narrow windows or increase solver effort.")
@@ -484,18 +409,10 @@ class ScheduleEngine:
                 raise UnschedulableError(
                     f"No solution found within {solve_timeout_seconds}s (timed out). Attempts: {states}."
                 )
-            if cancel_event is not None and hasattr(cancel_event, "is_set") and cancel_event.is_set():
-                raise GenerationCancelledError("Generation cancelled.")
-
-            state_key = _state_key(assigned)
-            rid, options = _select_next_requirement(assigned, state_key)
-            _emit_progress(states, rid, backtracks=backtracks, zero_option_failures=zero_option_failures)
-
-            if rid is None:
+            if index == len(sorted_ids):
                 for provider in provider_by_id.values():
                     if not _has_lunch_slot(provider, assigned):
                         self._log_constraint_failure("lunch", f"provider {provider.id} has no 30-min lunch slot")
-                        backtracks += 1
                         return
                 if best_score is None or running_penalty < best_score:
                     best = dict(assigned)
@@ -503,48 +420,25 @@ class ScheduleEngine:
                     self._log_decision(f"New best solution penalty={running_penalty} states={states}")
                 return
 
-            if not options:
-                zero_option_failures += 1
-                backtracks += 1
-                return
-
-            options = sorted(options, key=lambda c: soft_score(rid, c))
+            rid = sorted_ids[index]
+            options = sorted(candidate_map[rid], key=lambda c: soft_score(rid, c))
             for option in options:
                 reason = hard_conflict(rid, option, assigned)
                 if reason:
                     if conflict_logs < 120:
                         self._log_constraint_failure(rid, reason)
                         conflict_logs += 1
-                    backtracks += 1
                     continue
                 next_penalty = running_penalty + soft_score(rid, option)
                 if best_score is not None and next_penalty >= best_score:
-                    backtracks += 1
                     continue
                 assigned[rid] = option
-
-                # Forward checking: if any remaining request has zero feasible options, prune immediately.
-                next_key = _state_key(assigned)
-                dead_end = False
-                for other_rid in all_request_ids:
-                    if other_rid in assigned:
-                        continue
-                    if len(_feasible_options(other_rid, assigned, next_key)) == 0:
-                        zero_option_failures += 1
-                        backtracks += 1
-                        dead_end = True
-                        break
-
-                if not dead_end:
-                    self._log_decision(f"Assign {rid} -> {option.room_id}@{option.start_minute} provider={option.provider_id}")
-                    dfs(assigned, next_penalty)
+                self._log_decision(f"Assign {rid} -> {option.room_id}@{option.start_minute} provider={option.provider_id}")
+                dfs(index + 1, assigned, next_penalty)
                 del assigned[rid]
 
-        dfs({}, 0)
-        self._log_decision(
-            f"Backtracking attempts={states} backtracks={backtracks} zero_option_failures={zero_option_failures}"
-        )
-        _emit_progress(states, None, backtracks=backtracks, zero_option_failures=zero_option_failures)
+        dfs(0, {}, 0)
+        self._log_decision(f"Backtracking attempts={states}")
         if best is None:
             raise UnschedulableError("No full solution found for the day; all candidate combinations violate hard constraints.")
         return best

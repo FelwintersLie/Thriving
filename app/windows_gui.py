@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import copy
 import json
-import queue
-import time
 import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -513,11 +511,6 @@ class SchedulerDesktopApp:
         self.discipline_registry: List[Dict[str, Any]] = self._default_discipline_registry()
         self.active_clinic_config: Dict[str, Any] | None = None
         self.active_schedule_snapshot: Dict[str, Any] | None = None
-        self.generation_running = False
-        self.generation_kind: str | None = None
-        self.generation_queue: queue.Queue | None = None
-        self.generation_cancel_event = None
-        self.generation_progress_last_ui = 0.0
         self.app_settings_path = Path("data") / "app_settings.json"
         self.app_settings: Dict[str, Any] = self._load_app_settings()
 
@@ -1283,10 +1276,7 @@ class SchedulerDesktopApp:
 
         action_frame = ttk.Frame(parent)
         action_frame.pack(fill="x", padx=6, pady=(0, 6))
-        self.generate_auto_button = ttk.Button(action_frame, text="Generate 3-week Schedule", command=lambda: self._safe_action(self.generate_auto_schedule))
-        self.generate_auto_button.pack(side="left", padx=4)
-        self.cancel_auto_button = ttk.Button(action_frame, text="Cancel Generation", command=lambda: self._safe_action(self.cancel_generation), state="disabled")
-        self.cancel_auto_button.pack(side="left", padx=4)
+        ttk.Button(action_frame, text="Generate 3-week Schedule", command=lambda: self._safe_action(self.generate_auto_schedule)).pack(side="left", padx=4)
         ttk.Button(action_frame, text="Auto reconfigure existing schedule", command=lambda: self._safe_action(self.auto_reconfigure_existing_schedule)).pack(side="left", padx=4)
         ttk.Button(action_frame, text="Explain bottleneck", command=lambda: self._safe_action(self.explain_auto_bottleneck)).pack(side="left", padx=4)
 
@@ -1398,10 +1388,7 @@ class SchedulerDesktopApp:
 
         actions = ttk.Frame(parent)
         actions.pack(fill="x", padx=6, pady=(0, 6))
-        self.generate_eval_button = ttk.Button(actions, text="Generate EVAL Schedule", command=lambda: self._safe_action(self.generate_eval_schedule))
-        self.generate_eval_button.pack(side="left", padx=4)
-        self.cancel_eval_button = ttk.Button(actions, text="Cancel Generation", command=lambda: self._safe_action(self.cancel_generation), state="disabled")
-        self.cancel_eval_button.pack(side="left", padx=4)
+        ttk.Button(actions, text="Generate EVAL Schedule", command=lambda: self._safe_action(self.generate_eval_schedule)).pack(side="left", padx=4)
         ttk.Button(actions, text="Generate Combined Schedule", command=lambda: self._safe_action(self.generate_combined_schedule)).pack(side="left", padx=4)
         ttk.Button(actions, text="Import Existing Schedule JSON", command=lambda: self._safe_action(self.import_existing_schedule_json)).pack(side="left", padx=4)
 
@@ -3582,150 +3569,6 @@ class SchedulerDesktopApp:
         if hasattr(self, "main_notebook") and hasattr(self, "manual_tab"):
             self.main_notebook.select(self.manual_tab)
 
-    def _set_generation_controls(self, kind: str | None, running: bool) -> None:
-        if hasattr(self, "generate_auto_button"):
-            self.generate_auto_button.configure(state="disabled" if running else "normal")
-        if hasattr(self, "generate_eval_button"):
-            self.generate_eval_button.configure(state="disabled" if running else "normal")
-        if hasattr(self, "cancel_auto_button"):
-            self.cancel_auto_button.configure(state="normal" if running and kind == "iop" else "disabled")
-        if hasattr(self, "cancel_eval_button"):
-            self.cancel_eval_button.configure(state="normal" if running and kind == "eval" else "disabled")
-
-    def cancel_generation(self) -> None:
-        if not self.generation_running or self.generation_cancel_event is None:
-            self.status_var.set("Status: No generation is currently running")
-            return
-        self.generation_cancel_event.set()
-        self.status_var.set("Status: Cancelling generation...")
-
-    def _start_generation_worker(self, kind: str, payload: Dict[str, Any]) -> None:
-        if self.generation_running:
-            raise ValueError("A generation is already running")
-        self.generation_running = True
-        self.generation_kind = kind
-        self.generation_queue = queue.Queue()
-        self.generation_cancel_event = threading.Event()
-        self.generation_progress_last_ui = 0.0
-        self._set_generation_controls(kind, True)
-
-        def progress_cb(data: Dict[str, Any]) -> None:
-            if self.generation_queue is not None:
-                self.generation_queue.put(("progress", data))
-
-        def worker() -> None:
-            try:
-                solver_limits = dict(payload.get("solver_limits", {}))
-                solver_limits["cancel_event"] = self.generation_cancel_event
-                solver_limits["progress_callback"] = progress_cb
-                result = generate_three_week_schedule(
-                    profile_template=payload["profile_template"],
-                    requirements=payload["requirements"],
-                    previous_assignments=payload.get("previous_assignments"),
-                    solver_limits=solver_limits,
-                    locked_request_ids=payload.get("locked_request_ids"),
-                )
-                self.generation_queue.put(("result", result, payload))
-            except Exception as exc:  # noqa: BLE001
-                if self.generation_queue is not None:
-                    self.generation_queue.put(("error", exc))
-
-        threading.Thread(target=worker, daemon=True).start()
-        self.root.after(100, self._poll_generation_queue)
-
-    def _poll_generation_queue(self) -> None:
-        if not self.generation_running or self.generation_queue is None:
-            return
-
-        done = False
-        while True:
-            try:
-                event = self.generation_queue.get_nowait()
-            except queue.Empty:
-                break
-
-            etype = event[0]
-            if etype == "progress":
-                now = time.perf_counter()
-                if now - self.generation_progress_last_ui >= 0.12:
-                    data = event[1]
-                    req = data.get("requirement_id", "")
-                    disc = data.get("discipline", "")
-                    attempts = int(data.get("attempts", 0))
-                    elapsed = float(data.get("elapsed_seconds", 0.0))
-                    if req:
-                        self.status_var.set(f"Status: Solving... {elapsed:.1f}s | attempts={attempts} | req={req} {disc}")
-                    else:
-                        self.status_var.set(f"Status: Solving... {elapsed:.1f}s | attempts={attempts}")
-                    self.generation_progress_last_ui = now
-            elif etype == "error":
-                done = True
-                self._finish_generation_worker()
-                self.status_var.set("Status: Generation failed")
-                self.messagebox.showerror("Generation failed", str(event[1]))
-                return
-            elif etype == "result":
-                done = True
-                result, payload = event[1], event[2]
-                self._finish_generation_worker()
-                self._handle_generation_result(payload.get("kind", ""), payload, result)
-                return
-
-        if not done:
-            self.root.after(100, self._poll_generation_queue)
-
-    def _finish_generation_worker(self) -> None:
-        self.generation_running = False
-        self.generation_kind = None
-        self.generation_queue = None
-        self.generation_cancel_event = None
-        self._set_generation_controls(None, False)
-
-    def _handle_generation_result(self, kind: str, payload: Dict[str, Any], result: Dict[str, Any]) -> None:
-        if result.get("cancelled"):
-            self.status_var.set("Status: Generation cancelled.")
-            return
-        if not result.get("ok"):
-            issues = result.get("report", {}).get("issues", [])
-            msg = "\n".join(issues[:25] or ["No detailed bottlenecks available."])
-            if kind == "iop":
-                self._set_text(self.auto_report_text, "Auto-generation failed.\n" + msg)
-                self.status_var.set("Status: Auto-generation failed")
-            else:
-                self._set_text(self.eval_report_text, "EVAL generation failed.\n" + msg)
-                self.status_var.set("Status: EVAL generation failed")
-            return
-
-        profile_template = payload["profile_template"]
-        if kind == "iop":
-            self._push_manual_undo_snapshot("Generate IOP schedule")
-            self._update_after_auto_generation(profile_template, result)
-            diff = result.get("diff", {})
-            bottlenecks = result.get("bottlenecks", [])
-            lines = [
-                "Auto-generation completed.",
-                f"Assigned requests: {len(result.get('assignments', {}))}",
-                f"Unchanged: {diff.get('unchanged', 0)} | Moved: {diff.get('moved', 0)} | Added: {diff.get('added', 0)}",
-            ]
-            if bottlenecks:
-                lines.append("Soft requirement bottlenecks:")
-                lines.extend([f"- {b['date_key']} {b['requirement_id']}: {b['reason']}" for b in bottlenecks[:10]])
-            self._set_text(self.auto_report_text, "\n".join(lines))
-            self.status_var.set("Status: Auto-generation completed")
-        elif kind == "eval":
-            self._push_manual_undo_snapshot("Generate EVAL schedule")
-            self._update_after_auto_generation(profile_template, result, default_program_type="EVAL")
-            lines = [
-                "EVAL generation completed.",
-                f"Assignments: {len(result.get('assignments', {}))}",
-                f"Moved: {result.get('diff', {}).get('moved', 0)} | Added: {result.get('diff', {}).get('added', 0)}",
-            ]
-            if result.get("bottlenecks"):
-                lines.append("Bottlenecks:")
-                lines.extend(f"- {b['date_key']} {b['requirement_id']}: {b['reason']}" for b in result.get("bottlenecks", [])[:10])
-            self._set_text(self.eval_report_text, "\n".join(lines))
-            self.status_var.set("Status: EVAL generation complete")
-
     def generate_auto_schedule(self) -> None:
         if not self.auto_conditions:
             raise ValueError("Add at least one requirement before auto-generating")
@@ -3745,16 +3588,36 @@ class SchedulerDesktopApp:
             self.status_var.set("Status: Preflight failed; generation not started")
             self.messagebox.showwarning("Preflight failed", "\n".join(lines))
             return
+        result = generate_three_week_schedule(
+            profile_template=profile_template,
+            requirements=self.auto_conditions,
+            previous_assignments=self._existing_assignment_map(),
+            solver_limits=self._solver_limits_from_ui(),
+            locked_request_ids=self._soft_locked_request_ids(),
+        )
 
-        payload = {
-            "kind": "iop",
-            "profile_template": profile_template,
-            "requirements": copy.deepcopy(self.auto_conditions),
-            "previous_assignments": self._existing_assignment_map(),
-            "locked_request_ids": self._soft_locked_request_ids(),
-            "solver_limits": self._solver_limits_from_ui(),
-        }
-        self._start_generation_worker("iop", payload)
+        if not result.get("ok"):
+            issues = result.get("report", {}).get("issues", [])
+            text = "Auto-generation failed.\n" + "\n".join(issues[:25] or ["No detailed bottlenecks available."])
+            self._set_text(self.auto_report_text, text)
+            self.status_var.set("Status: Auto-generation failed")
+            return
+
+        self._push_manual_undo_snapshot("Generate IOP schedule")
+        self._update_after_auto_generation(profile_template, result)
+
+        diff = result.get("diff", {})
+        bottlenecks = result.get("bottlenecks", [])
+        lines = [
+            "Auto-generation completed.",
+            f"Assigned requests: {len(result.get('assignments', {}))}",
+            f"Unchanged: {diff.get('unchanged', 0)} | Moved: {diff.get('moved', 0)} | Added: {diff.get('added', 0)}",
+        ]
+        if bottlenecks:
+            lines.append("Soft requirement bottlenecks:")
+            lines.extend([f"- {b['date_key']} {b['requirement_id']}: {b['reason']}" for b in bottlenecks[:10]])
+        self._set_text(self.auto_report_text, "\n".join(lines))
+        self.status_var.set("Status: Auto-generation completed")
 
     def auto_reconfigure_existing_schedule(self) -> None:
         if not self.auto_conditions:
@@ -3827,16 +3690,32 @@ class SchedulerDesktopApp:
             self.status_var.set("Status: Preflight failed; EVAL generation not started")
             self.messagebox.showwarning("Preflight failed", "\n".join(lines))
             return
+        result = generate_three_week_schedule(
+            profile_template=profile_template,
+            requirements=self.eval_conditions,
+            previous_assignments=self._existing_assignment_map(),
+            solver_limits=self._solver_limits_from_ui(),
+            locked_request_ids=self._soft_locked_request_ids(),
+        )
+        if not result.get("ok"):
+            issues = result.get("report", {}).get("issues", [])
+            lines = ["EVAL generation failed."] + [f"- {i}" for i in issues[:25] or ["No detailed bottlenecks available."]]
+            self._set_text(self.eval_report_text, "\n".join(lines))
+            self.status_var.set("Status: EVAL generation failed")
+            return
 
-        payload = {
-            "kind": "eval",
-            "profile_template": profile_template,
-            "requirements": copy.deepcopy(self.eval_conditions),
-            "previous_assignments": self._existing_assignment_map(),
-            "locked_request_ids": self._soft_locked_request_ids(),
-            "solver_limits": self._solver_limits_from_ui(),
-        }
-        self._start_generation_worker("eval", payload)
+        self._push_manual_undo_snapshot("Generate EVAL schedule")
+        self._update_after_auto_generation(profile_template, result, default_program_type="EVAL")
+        lines = [
+            "EVAL generation completed.",
+            f"Assignments: {len(result.get('assignments', {}))}",
+            f"Moved: {result.get('diff', {}).get('moved', 0)} | Added: {result.get('diff', {}).get('added', 0)}",
+        ]
+        if result.get("bottlenecks"):
+            lines.append("Bottlenecks:")
+            lines.extend(f"- {b['date_key']} {b['requirement_id']}: {b['reason']}" for b in result.get("bottlenecks", [])[:10])
+        self._set_text(self.eval_report_text, "\n".join(lines))
+        self.status_var.set("Status: EVAL generation complete" if result.get("ok") else "Status: EVAL generation failed")
 
     def generate_combined_schedule(self) -> None:
         if not self.auto_conditions:
