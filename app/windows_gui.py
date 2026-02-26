@@ -54,6 +54,8 @@ DISCIPLINES = [
     "Dietician",
     "Equine Therapy",
     "Evaluation Group",
+    "LAUNCH",
+    "Lunch",
     "Moral Injury",
     "Neuropsychology",
     "PT/Audiology Group",
@@ -87,6 +89,7 @@ PREDEFINED_ROOMS = [
     "Suite 2",
     "Suite 3",
     "VNG Room",
+    "Wes's Office",
 ]
 
 DEFAULT_PROVIDER_NAMES = [
