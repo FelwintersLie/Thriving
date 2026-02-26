@@ -509,6 +509,7 @@ class SchedulerDesktopApp:
         self.loaded_profile_path: Path | None = None
         self.manual_undo_stack: List[Dict[str, Any]] = []
         self.selected_request_id: str | None = None
+        self.discipline_registry: List[Dict[str, Any]] = self._default_discipline_registry()
 
         self._build_layout()
 
@@ -648,6 +649,10 @@ class SchedulerDesktopApp:
         notebook.add(room_rules_tab, text="Room Rules")
         room_rules_content = getattr(room_rules_tab, "_scroll_content")
 
+        disciplines_tab = self._make_scrollable_tab(notebook)
+        notebook.add(disciplines_tab, text="Disciplines")
+        disciplines_content = getattr(disciplines_tab, "_scroll_content")
+
         manual_split = ttk.Panedwindow(manual_content, orient=tk.VERTICAL)
         manual_split.pack(fill=tk.BOTH, expand=True, pady=(0, 8))
 
@@ -719,9 +724,158 @@ class SchedulerDesktopApp:
         self._build_eval_generator_tab(eval_content)
         self._build_provider_profiles_tab(provider_content)
         self._build_room_rules_tab(room_rules_content)
+        self._build_disciplines_tab(disciplines_content)
 
         sizegrip = ttk.Sizegrip(main)
         sizegrip.pack(side=tk.RIGHT, anchor="se", padx=(0, 4), pady=(0, 4))
+
+    def _default_discipline_registry(self) -> List[Dict[str, Any]]:
+        return [{"name": d, "show_in_iop": True, "show_in_eval": True} for d in DISCIPLINES]
+
+    def _normalize_discipline_registry(self, incoming: Any) -> List[Dict[str, Any]]:
+        rows: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+        for row in incoming or []:
+            name = str((row or {}).get("name", "")).strip()
+            if not name:
+                continue
+            key = name.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append({
+                "name": name,
+                "show_in_iop": bool((row or {}).get("show_in_iop", True)),
+                "show_in_eval": bool((row or {}).get("show_in_eval", True)),
+            })
+        if not rows:
+            rows = self._default_discipline_registry()
+        return rows
+
+    def _discipline_names_for(self, scope: str) -> List[str]:
+        if scope == "iop":
+            names = [d["name"] for d in self.discipline_registry if d.get("show_in_iop", True)]
+        elif scope == "eval":
+            names = [d["name"] for d in self.discipline_registry if d.get("show_in_eval", True)]
+        else:
+            names = [d["name"] for d in self.discipline_registry]
+        return sorted(names)
+
+    def _apply_discipline_registry_to_ui(self) -> None:
+        if hasattr(self, "appt_discipline_var"):
+            values = self._discipline_names_for("all")
+            self.appt_discipline_var.set(self.appt_discipline_var.get() if self.appt_discipline_var.get() in values else (values[0] if values else ""))
+        if hasattr(self, "auto_discipline_var"):
+            values = self._discipline_names_for("iop")
+            if hasattr(self, "auto_discipline_combo"):
+                self.auto_discipline_combo["values"] = values
+            self.auto_discipline_var.set(self.auto_discipline_var.get() if self.auto_discipline_var.get() in values else (values[0] if values else ""))
+        if hasattr(self, "eval_discipline_var"):
+            values = self._discipline_names_for("eval")
+            if hasattr(self, "eval_discipline_combo"):
+                self.eval_discipline_combo["values"] = values
+            self.eval_discipline_var.set(self.eval_discipline_var.get() if self.eval_discipline_var.get() in values else (values[0] if values else ""))
+
+    def _build_disciplines_tab(self, parent) -> None:
+        ttk = self.ttk
+        tk = self.tk
+        wrap = ttk.Frame(parent, padding=8)
+        wrap.pack(fill="both", expand=True)
+
+        left = ttk.Labelframe(wrap, text="Disciplines", padding=8)
+        left.pack(side="left", fill="both", expand=True)
+        right = ttk.Labelframe(wrap, text="Edit Discipline", padding=8)
+        right.pack(side="left", fill="y", padx=(8, 0))
+
+        self.discipline_list = tk.Listbox(left, height=18)
+        self.discipline_list.pack(fill="both", expand=True)
+        self.discipline_list.bind("<<ListboxSelect>>", self._on_discipline_select)
+
+        self.new_discipline_var = tk.StringVar(value="")
+        ttk.Entry(right, textvariable=self.new_discipline_var, width=24).pack(fill="x")
+        ttk.Button(right, text="Add Discipline", command=lambda: self._safe_action(self.add_discipline)).pack(fill="x", pady=(6, 0))
+        ttk.Button(right, text="Remove Discipline", command=lambda: self._safe_action(self.remove_discipline)).pack(fill="x", pady=(6, 0))
+
+        self.discipline_show_iop_var = tk.BooleanVar(value=True)
+        self.discipline_show_eval_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(right, text="Show in IOP", variable=self.discipline_show_iop_var, command=lambda: self._safe_action(self.save_selected_discipline_visibility)).pack(anchor="w", pady=(10, 0))
+        ttk.Checkbutton(right, text="Show in EVAL", variable=self.discipline_show_eval_var, command=lambda: self._safe_action(self.save_selected_discipline_visibility)).pack(anchor="w")
+
+        self._refresh_discipline_list()
+
+    def _refresh_discipline_list(self) -> None:
+        if not hasattr(self, "discipline_list"):
+            return
+        self.discipline_list.delete(0, self.tk.END)
+        for row in self.discipline_registry:
+            flags = []
+            if row.get("show_in_iop", True):
+                flags.append("IOP")
+            if row.get("show_in_eval", True):
+                flags.append("EVAL")
+            self.discipline_list.insert(self.tk.END, f"{row['name']} ({'/'.join(flags) or 'hidden'})")
+
+    def _on_discipline_select(self, _event=None) -> None:
+        if not hasattr(self, "discipline_list"):
+            return
+        sel = self.discipline_list.curselection()
+        if not sel:
+            return
+        row = self.discipline_registry[int(sel[0])]
+        self.discipline_show_iop_var.set(bool(row.get("show_in_iop", True)))
+        self.discipline_show_eval_var.set(bool(row.get("show_in_eval", True)))
+
+    def add_discipline(self) -> None:
+        name = self.new_discipline_var.get().strip()
+        if not name:
+            raise ValueError("Discipline name is required")
+        if any(d["name"].lower() == name.lower() for d in self.discipline_registry):
+            raise ValueError("Discipline already exists")
+        self.discipline_registry.append({"name": name, "show_in_iop": True, "show_in_eval": True})
+        self.new_discipline_var.set("")
+        self._refresh_discipline_list()
+        self._apply_discipline_registry_to_ui()
+        if self.loaded_profile is not None:
+            self.loaded_profile["discipline_registry"] = copy.deepcopy(self.discipline_registry)
+        self._autosave_profile()
+
+    def remove_discipline(self) -> None:
+        if not hasattr(self, "discipline_list") or not self.discipline_list.curselection():
+            raise ValueError("Select a discipline to remove")
+        idx = int(self.discipline_list.curselection()[0])
+        row = self.discipline_registry[idx]
+        name = row["name"]
+        refs = []
+        if any(r.get("discipline") == name for r in self.auto_conditions + self.eval_conditions):
+            refs.append("requirements")
+        if any(name in (p.get("disciplines") or []) for p in self.provider_profiles):
+            refs.append("provider profiles")
+        if any(name in ((v or {}).get("allowed_disciplines") or []) for v in (self.room_rules.get("rooms", {}) or {}).values()):
+            refs.append("room rules")
+        if self.loaded_profile and any(r.get("discipline") == name for r in self.loaded_profile.get("requests", [])):
+            refs.append("scheduled appointments")
+        if refs:
+            raise ValueError(f"Cannot remove '{name}': referenced in {', '.join(refs)}")
+        if not self.messagebox.askyesno("Confirm", f"Remove discipline '{name}'?"):
+            return
+        self.discipline_registry.pop(idx)
+        self._refresh_discipline_list()
+        self._apply_discipline_registry_to_ui()
+        if self.loaded_profile is not None:
+            self.loaded_profile["discipline_registry"] = copy.deepcopy(self.discipline_registry)
+        self._autosave_profile()
+
+    def save_selected_discipline_visibility(self) -> None:
+        if not hasattr(self, "discipline_list") or not self.discipline_list.curselection():
+            return
+        idx = int(self.discipline_list.curselection()[0])
+        self.discipline_registry[idx]["show_in_iop"] = bool(self.discipline_show_iop_var.get())
+        self.discipline_registry[idx]["show_in_eval"] = bool(self.discipline_show_eval_var.get())
+        self._refresh_discipline_list()
+        self._apply_discipline_registry_to_ui()
+        if self.loaded_profile is not None:
+            self.loaded_profile["discipline_registry"] = copy.deepcopy(self.discipline_registry)
+        self._autosave_profile()
 
     def _build_auto_generator_tab(self, parent) -> None:
         ttk = self.ttk
@@ -786,7 +940,8 @@ class SchedulerDesktopApp:
         ttk.Entry(cond, textvariable=self.auto_req_id_var, width=12).grid(row=1, column=0, padx=2)
 
         ttk.Label(cond, text="Discipline").grid(row=0, column=1, sticky="w")
-        ttk.Combobox(cond, textvariable=self.auto_discipline_var, values=DISCIPLINES, state="readonly", width=20).grid(row=1, column=1, padx=2)
+        self.auto_discipline_combo = ttk.Combobox(cond, textvariable=self.auto_discipline_var, values=self._discipline_names_for("iop"), state="readonly", width=20)
+        self.auto_discipline_combo.grid(row=1, column=1, padx=2)
 
         ttk.Label(cond, text="Provider A").grid(row=0, column=2, sticky="w")
         self.auto_provider_combo = ttk.Combobox(cond, textvariable=self.auto_provider_var, values=provider_values, state="readonly", width=18)
@@ -941,7 +1096,8 @@ class SchedulerDesktopApp:
         ttk.Label(req, text="Requirement ID").grid(row=0, column=0, sticky="w")
         ttk.Entry(req, textvariable=self.eval_req_id_var, width=14).grid(row=1, column=0, padx=2)
         ttk.Label(req, text="Discipline").grid(row=0, column=1, sticky="w")
-        ttk.Combobox(req, textvariable=self.eval_discipline_var, values=DISCIPLINES, state="readonly", width=20).grid(row=1, column=1, padx=2)
+        self.eval_discipline_combo = ttk.Combobox(req, textvariable=self.eval_discipline_var, values=self._discipline_names_for("eval"), state="readonly", width=20)
+        self.eval_discipline_combo.grid(row=1, column=1, padx=2)
         ttk.Label(req, text="Provider").grid(row=0, column=2, sticky="w")
         ttk.Combobox(req, textvariable=self.eval_provider_var, values=provider_values, state="readonly", width=18).grid(row=1, column=2, padx=2)
         ttk.Label(req, text="Room").grid(row=0, column=3, sticky="w")
@@ -1278,7 +1434,8 @@ class SchedulerDesktopApp:
         self.ttk.Combobox(appt, textvariable=self.appt_mode_var, values=["individual", "group"], state="readonly", width=12).grid(row=1, column=5, padx=2)
 
         self.ttk.Label(appt, text="Discipline").grid(row=0, column=6, sticky="w")
-        self.ttk.Combobox(appt, textvariable=self.appt_discipline_var, values=DISCIPLINES, state="readonly", width=22).grid(row=1, column=6, padx=2)
+        self.appt_discipline_combo = self.ttk.Combobox(appt, textvariable=self.appt_discipline_var, values=self._discipline_names_for("all"), state="readonly", width=22)
+        self.appt_discipline_combo.grid(row=1, column=6, padx=2)
 
         self.ttk.Label(appt, text="Begin").grid(row=0, column=7, sticky="w")
         self.ttk.Combobox(appt, textvariable=self.appt_start_var, values=time_choices, state="readonly", width=10).grid(row=1, column=7, padx=2)
@@ -1338,6 +1495,9 @@ class SchedulerDesktopApp:
         return self.loaded_profile
 
     def _sync_profile_resources(self, profile: Dict[str, Any]) -> None:
+        self.discipline_registry = self._normalize_discipline_registry(profile.get("discipline_registry", self.discipline_registry))
+        profile["discipline_registry"] = copy.deepcopy(self.discipline_registry)
+        self._apply_discipline_registry_to_ui()
         day_window = profile.get("day_window", {"start_minute": GRID_START_MINUTE, "end_minute": GRID_END_MINUTE})
         day_start = int(day_window.get("start_minute", GRID_START_MINUTE))
         day_end = int(day_window.get("end_minute", GRID_END_MINUTE))
