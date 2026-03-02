@@ -154,6 +154,7 @@ GRID_SLOT_MINUTES = 15
 IOP_PATIENT_ID_CHOICES = [f"I{i}" for i in range(1, 31)]
 EVAL_PATIENT_ID_CHOICES = [f"E{i}" for i in range(1, 11)]
 PATIENT_ID_CHOICES = IOP_PATIENT_ID_CHOICES + EVAL_PATIENT_ID_CHOICES
+REQUIREMENTS_TEMPLATE_SCHEMA_VERSION = 1
 
 
 @dataclass
@@ -174,9 +175,9 @@ def summarize_schedule(result: Dict[str, Any]) -> DashboardSummary:
 
 def _safe_tk_import():
     import tkinter as tk
-    from tkinter import filedialog, messagebox, scrolledtext, ttk
+    from tkinter import filedialog, messagebox, scrolledtext, simpledialog, ttk
 
-    return tk, ttk, messagebox, scrolledtext, filedialog
+    return tk, ttk, messagebox, scrolledtext, filedialog, simpledialog
 
 
 def _to_ampm(minute: int) -> str:
@@ -441,12 +442,13 @@ def build_patient_grid_data(
 
 class SchedulerDesktopApp:
     def __init__(self) -> None:
-        tk, ttk, messagebox, scrolledtext, filedialog = _safe_tk_import()
+        tk, ttk, messagebox, scrolledtext, filedialog, simpledialog = _safe_tk_import()
         self.tk = tk
         self.ttk = ttk
         self.messagebox = messagebox
         self.scrolledtext = scrolledtext
         self.filedialog = filedialog
+        self.simpledialog = simpledialog
 
         self.root = tk.Tk()
         self.root.title("Therapy Scheduler - Visual Planner")
@@ -533,7 +535,12 @@ class SchedulerDesktopApp:
             self._refresh_profile_preview()
 
     def _normalize_app_settings(self, raw: Dict[str, Any] | None) -> Dict[str, Any]:
-        default = {"max_solve_seconds": 10}
+        default = {
+            "max_solve_seconds": 10,
+            "enable_partial_schedule_on_failure": False,
+            "default_iop_requirements_template_path": "",
+            "default_eval_requirements_template_path": "",
+        }
         if not isinstance(raw, dict):
             return default
         try:
@@ -542,7 +549,16 @@ class SchedulerDesktopApp:
             value = 10
         if value < 1:
             value = 10
-        return {"max_solve_seconds": value}
+        partial_raw = raw.get("enable_partial_schedule_on_failure", False)
+        partial_enabled = bool(partial_raw) if isinstance(partial_raw, bool) else str(partial_raw).strip().lower() in {"1", "true", "yes", "on"}
+        iop_default = str(raw.get("default_iop_requirements_template_path", "") or "").strip()
+        eval_default = str(raw.get("default_eval_requirements_template_path", "") or "").strip()
+        return {
+            "max_solve_seconds": value,
+            "enable_partial_schedule_on_failure": partial_enabled,
+            "default_iop_requirements_template_path": iop_default,
+            "default_eval_requirements_template_path": eval_default,
+        }
 
     def _save_app_settings_from_ui(self) -> None:
         value_raw = self.max_solve_seconds_var.get().strip() if hasattr(self, "max_solve_seconds_var") else str(self.app_settings.get("max_solve_seconds", 10))
@@ -553,8 +569,14 @@ class SchedulerDesktopApp:
         if value < 1:
             value = 10
         self.app_settings["max_solve_seconds"] = value
+        partial_enabled = bool(self.enable_partial_schedule_var.get()) if hasattr(self, "enable_partial_schedule_var") else bool(self.app_settings.get("enable_partial_schedule_on_failure", False))
+        self.app_settings["enable_partial_schedule_on_failure"] = partial_enabled
+        self.app_settings["default_iop_requirements_template_path"] = self.default_iop_template_path_var.get().strip() if hasattr(self, "default_iop_template_path_var") else str(self.app_settings.get("default_iop_requirements_template_path", ""))
+        self.app_settings["default_eval_requirements_template_path"] = self.default_eval_template_path_var.get().strip() if hasattr(self, "default_eval_template_path_var") else str(self.app_settings.get("default_eval_requirements_template_path", ""))
         if hasattr(self, "max_solve_seconds_var"):
             self.max_solve_seconds_var.set(str(value))
+        if hasattr(self, "enable_partial_schedule_var"):
+            self.enable_partial_schedule_var.set(partial_enabled)
         save_app_settings(self.app_settings)
 
     def _update_loaded_artifact_status(self) -> None:
@@ -717,6 +739,10 @@ class SchedulerDesktopApp:
         notebook.add(disciplines_tab, text="Disciplines")
         disciplines_content = getattr(disciplines_tab, "_scroll_content")
 
+        settings_tab = self._make_scrollable_tab(notebook)
+        notebook.add(settings_tab, text="Settings")
+        settings_content = getattr(settings_tab, "_scroll_content")
+
         manual_split = ttk.Panedwindow(manual_content, orient=tk.VERTICAL)
         manual_split.pack(fill=tk.BOTH, expand=True, pady=(0, 8))
 
@@ -788,6 +814,7 @@ class SchedulerDesktopApp:
         self._build_provider_profiles_tab(provider_content)
         self._build_room_rules_tab(room_rules_content)
         self._build_disciplines_tab(disciplines_content)
+        self._build_settings_tab(settings_content)
 
         sizegrip = ttk.Sizegrip(main)
         sizegrip.pack(side=tk.RIGHT, anchor="se", padx=(0, 4), pady=(0, 4))
@@ -1056,10 +1083,6 @@ class SchedulerDesktopApp:
         ttk.Combobox(cond, textvariable=self.auto_window_start_var, values=time_choices, state="readonly", width=10).grid(row=6, column=0, padx=2)
         ttk.Label(cond, text="Appointment Window End").grid(row=5, column=1, sticky="w", pady=(6, 0))
         ttk.Combobox(cond, textvariable=self.auto_window_end_var, values=time_choices, state="readonly", width=10).grid(row=6, column=1, padx=2)
-        ttk.Button(cond, text="Add Appointment Window", command=lambda: self._safe_action(self.add_requirement_window)).grid(row=6, column=2, padx=6)
-
-        ttk.Label(cond, text="Appointment Windows").grid(row=5, column=3, sticky="w", pady=(6, 0))
-        ttk.Entry(cond, textvariable=self.auto_windows_var, width=36).grid(row=6, column=3, columnspan=2, padx=2, sticky="w")
 
         ttk.Checkbutton(cond, text="Hard constraint", variable=self.auto_hard_var).grid(row=6, column=5, sticky="w")
         ttk.Label(cond, text="Priority").grid(row=5, column=6, sticky="w", pady=(6, 0))
@@ -1151,6 +1174,9 @@ class SchedulerDesktopApp:
         self.auto_cancel_button.pack(side="left", padx=4)
         ttk.Button(action_frame, text="Auto reconfigure existing schedule", command=lambda: self._safe_action(self.auto_reconfigure_existing_schedule)).pack(side="left", padx=4)
         ttk.Button(action_frame, text="Explain bottleneck", command=lambda: self._safe_action(self.explain_auto_bottleneck)).pack(side="left", padx=4)
+        ttk.Button(action_frame, text="Save Requirements Template…", command=lambda: self._safe_action(self.save_iop_requirements_template)).pack(side="left", padx=4)
+        ttk.Button(action_frame, text="Load Requirements Template…", command=lambda: self._safe_action(self.load_iop_requirements_template)).pack(side="left", padx=4)
+        ttk.Button(action_frame, text="Quick Load Default Template", command=lambda: self._safe_action(self.quick_load_default_iop_requirements_template)).pack(side="left", padx=4)
 
         self._refresh_auto_condition_list()
     def _build_eval_generator_tab(self, parent) -> None:
@@ -1303,6 +1329,9 @@ class SchedulerDesktopApp:
         self.eval_cancel_button.pack(side="left", padx=4)
         ttk.Button(actions, text="Generate Combined Schedule", command=lambda: self._safe_action(self.generate_combined_schedule)).pack(side="left", padx=4)
         ttk.Button(actions, text="Import Existing Schedule JSON", command=lambda: self._safe_action(self.import_existing_schedule_json)).pack(side="left", padx=4)
+        ttk.Button(actions, text="Save Requirements Template…", command=lambda: self._safe_action(self.save_eval_requirements_template)).pack(side="left", padx=4)
+        ttk.Button(actions, text="Load Requirements Template…", command=lambda: self._safe_action(self.load_eval_requirements_template)).pack(side="left", padx=4)
+        ttk.Button(actions, text="Quick Load Default Template", command=lambda: self._safe_action(self.quick_load_default_eval_requirements_template)).pack(side="left", padx=4)
 
         report = ttk.Labelframe(parent, text="EVAL / Combined Report", padding=10)
         report.pack(fill="both", expand=True, padx=6, pady=6)
@@ -1545,14 +1574,6 @@ class SchedulerDesktopApp:
 
         ttk.Button(cal, text="Apply Calendar Settings", command=lambda: self._safe_action(self.apply_calendar_settings)).grid(row=1, column=5, padx=6)
 
-        solve = ttk.Labelframe(parent, text="Schedule Generation", padding=6)
-        solve.pack(fill="x", pady=(0, 6))
-        self.max_solve_seconds_var = self.tk.StringVar(value=str(self.app_settings.get("max_solve_seconds", 10)))
-        ttk.Label(solve, text="Max Solve Time (seconds)").grid(row=0, column=0, sticky="w")
-        ttk.Entry(solve, textvariable=self.max_solve_seconds_var, width=12).grid(row=1, column=0, padx=2, sticky="w")
-        ttk.Label(solve, text="Minimum 1 second. Invalid values reset to 10.", foreground="#495057").grid(row=0, column=1, rowspan=2, padx=(10, 0), sticky="w")
-        ttk.Button(solve, text="Apply Solve Settings", command=lambda: self._safe_action(self.apply_solve_settings)).grid(row=1, column=2, padx=6)
-
         self.provider_selected_var = self.tk.StringVar(value=self.provider_catalog[0] if self.provider_catalog else "")
         self.provider_new_var = self.tk.StringVar()
         self.provider_avail_weekday_var = self.tk.StringVar(value="Monday")
@@ -1606,6 +1627,41 @@ class SchedulerDesktopApp:
         ttk.Button(appt, text="Add Appointment", command=lambda: self._safe_action(self.add_appointment)).grid(row=1, column=9, padx=6)
         ttk.Button(appt, text="Delete Appointment", command=lambda: self._safe_action(self.delete_selected_appointment)).grid(row=1, column=10, padx=6)
         ttk.Button(appt, text="Undo Manual Action", command=lambda: self._safe_action(self.undo_manual_action)).grid(row=1, column=11, padx=6)
+
+    def _build_settings_tab(self, parent) -> None:
+        ttk = self.ttk
+
+        frame = ttk.Frame(parent, padding=8)
+        frame.pack(fill="both", expand=True)
+
+        solve = ttk.Labelframe(frame, text="Schedule Generation", padding=6)
+        solve.pack(fill="x")
+        self.max_solve_seconds_var = self.tk.StringVar(value=str(self.app_settings.get("max_solve_seconds", 10)))
+        ttk.Label(solve, text="Max Solve Time (seconds)").grid(row=0, column=0, sticky="w")
+        ttk.Entry(solve, textvariable=self.max_solve_seconds_var, width=12).grid(row=1, column=0, padx=2, sticky="w")
+        ttk.Label(solve, text="Minimum 1 second. Invalid values reset to 10.", foreground="#495057").grid(row=0, column=1, rowspan=2, padx=(10, 0), sticky="w")
+        ttk.Button(solve, text="Apply Solve Settings", command=lambda: self._safe_action(self.apply_solve_settings)).grid(row=1, column=2, padx=6)
+        self.enable_partial_schedule_var = self.tk.BooleanVar(value=bool(self.app_settings.get("enable_partial_schedule_on_failure", False)))
+        ttk.Checkbutton(
+            solve,
+            text="Return Best Partial Schedule if Full Solution Cannot Be Found",
+            variable=self.enable_partial_schedule_var,
+        ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(8, 0))
+
+        templates = ttk.Labelframe(frame, text="Default Requirements Templates", padding=6)
+        templates.pack(fill="x", pady=(8, 0))
+        self.default_iop_template_path_var = self.tk.StringVar(value=str(self.app_settings.get("default_iop_requirements_template_path", "") or ""))
+        self.default_eval_template_path_var = self.tk.StringVar(value=str(self.app_settings.get("default_eval_requirements_template_path", "") or ""))
+        ttk.Label(templates, text="Default IOP template").grid(row=0, column=0, sticky="w")
+        ttk.Entry(templates, textvariable=self.default_iop_template_path_var, width=80).grid(row=1, column=0, padx=(0, 4), sticky="ew")
+        ttk.Button(templates, text="Browse…", command=lambda: self._safe_action(self.browse_default_iop_template_path)).grid(row=1, column=1, padx=2)
+        ttk.Button(templates, text="Clear", command=lambda: self._safe_action(self.clear_default_iop_template_path)).grid(row=1, column=2, padx=2)
+
+        ttk.Label(templates, text="Default EVAL template").grid(row=2, column=0, sticky="w", pady=(8, 0))
+        ttk.Entry(templates, textvariable=self.default_eval_template_path_var, width=80).grid(row=3, column=0, padx=(0, 4), sticky="ew")
+        ttk.Button(templates, text="Browse…", command=lambda: self._safe_action(self.browse_default_eval_template_path)).grid(row=3, column=1, padx=2)
+        ttk.Button(templates, text="Clear", command=lambda: self._safe_action(self.clear_default_eval_template_path)).grid(row=3, column=2, padx=2)
+        templates.columnconfigure(0, weight=1)
 
     def _safe_action(self, fn) -> None:
         try:
@@ -2528,7 +2584,153 @@ class SchedulerDesktopApp:
 
     def apply_solve_settings(self) -> None:
         self._save_app_settings_from_ui()
-        self.status_var.set(f"Status: Max solve time set to {self.app_settings.get('max_solve_seconds', 10)}s")
+        partial_text = "ON" if self.app_settings.get("enable_partial_schedule_on_failure", False) else "OFF"
+        self.status_var.set(f"Status: Max solve time set to {self.app_settings.get('max_solve_seconds', 10)}s | Partial-on-failure {partial_text}")
+
+    def _build_requirements_template_payload(self, program_type: str, template_name: str) -> Dict[str, Any]:
+        if program_type == "IOP":
+            requirements = copy.deepcopy(self.auto_conditions)
+            generator_settings = {
+                "patient_count": self.auto_patients_var.get().strip(),
+                "start_year": self.auto_start_year_var.get().strip(),
+                "start_month": self.auto_start_month_var.get().strip(),
+                "start_day": self.auto_start_day_var.get().strip(),
+            }
+        else:
+            requirements = copy.deepcopy(self.eval_conditions)
+            generator_settings = {
+                "cohort_start_year": self.eval_start_year_var.get().strip(),
+                "cohort_start_month": self.eval_start_month_var.get().strip(),
+                "cohort_start_day": self.eval_start_day_var.get().strip(),
+                "cohort_type": self.eval_cohort_var.get().strip(),
+                "eval_patient_count": self.eval_patient_count_var.get().strip(),
+                "group_start": self.eval_group_start_var.get().strip(),
+                "group_duration": self.eval_group_duration_var.get().strip(),
+            }
+        return {
+            "schema_version": REQUIREMENTS_TEMPLATE_SCHEMA_VERSION,
+            "template_id": str(uuid.uuid4()),
+            "template_name": template_name,
+            "program_type": program_type,
+            "saved_at": datetime.utcnow().isoformat() + "Z",
+            "requirements": requirements,
+            "generator_settings": generator_settings,
+        }
+
+    def _validate_requirements_template_payload(self, payload: Dict[str, Any], expected_program_type: str) -> Dict[str, Any]:
+        if not isinstance(payload, dict):
+            raise ValueError("Template file must contain a JSON object")
+        if int(payload.get("schema_version", -1)) != REQUIREMENTS_TEMPLATE_SCHEMA_VERSION:
+            raise ValueError(f"Unsupported template schema_version: {payload.get('schema_version')}")
+        program_type = str(payload.get("program_type", "")).strip().upper()
+        if program_type != expected_program_type:
+            raise ValueError(f"Template program_type '{program_type}' does not match expected '{expected_program_type}'")
+        reqs_raw = payload.get("requirements", [])
+        if not isinstance(reqs_raw, list):
+            raise ValueError("Template requirements must be a list")
+        validated = [validate_requirement(r) for r in reqs_raw if isinstance(r, dict)]
+        return {"requirements": validated, "generator_settings": payload.get("generator_settings", {}) if isinstance(payload.get("generator_settings", {}), dict) else {}}
+
+    def _save_requirements_template(self, program_type: str) -> None:
+        name = self.simpledialog.askstring("Template Name", f"Enter {program_type} template name")
+        if not name:
+            return
+        ext = "*.iop_req_template.json" if program_type == "IOP" else "*.eval_req_template.json"
+        path_raw = self.filedialog.asksaveasfilename(
+            title=f"Save {program_type} Requirements Template",
+            defaultextension=ext.split('*')[-1],
+            filetypes=[(f"{program_type} template", ext), ("JSON files", "*.json")],
+        )
+        if not path_raw:
+            return
+        payload = self._build_requirements_template_payload(program_type, name.strip())
+        Path(path_raw).write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        self.status_var.set(f"Status: Saved {program_type} requirements template")
+
+    def _load_requirements_template(self, program_type: str, path_raw: str | None = None) -> None:
+        ext = "*.iop_req_template.json" if program_type == "IOP" else "*.eval_req_template.json"
+        path = path_raw or self.filedialog.askopenfilename(
+            title=f"Load {program_type} Requirements Template",
+            filetypes=[(f"{program_type} template", ext), ("JSON files", "*.json")],
+        )
+        if not path:
+            return
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+        parsed = self._validate_requirements_template_payload(payload, program_type)
+        if program_type == "IOP":
+            self.auto_conditions = parsed["requirements"]
+            settings = parsed.get("generator_settings", {})
+            self.auto_patients_var.set(str(settings.get("patient_count", self.auto_patients_var.get())))
+            self.auto_start_year_var.set(str(settings.get("start_year", self.auto_start_year_var.get())))
+            self.auto_start_month_var.set(str(settings.get("start_month", self.auto_start_month_var.get())))
+            self.auto_start_day_var.set(str(settings.get("start_day", self.auto_start_day_var.get())))
+            self._refresh_auto_condition_list()
+        else:
+            self.eval_conditions = parsed["requirements"]
+            settings = parsed.get("generator_settings", {})
+            self.eval_start_year_var.set(str(settings.get("cohort_start_year", self.eval_start_year_var.get())))
+            self.eval_start_month_var.set(str(settings.get("cohort_start_month", self.eval_start_month_var.get())))
+            self.eval_start_day_var.set(str(settings.get("cohort_start_day", self.eval_start_day_var.get())))
+            self.eval_cohort_var.set(str(settings.get("cohort_type", self.eval_cohort_var.get())))
+            self.eval_patient_count_var.set(str(settings.get("eval_patient_count", self.eval_patient_count_var.get())))
+            self.eval_group_start_var.set(str(settings.get("group_start", self.eval_group_start_var.get())))
+            self.eval_group_duration_var.set(str(settings.get("group_duration", self.eval_group_duration_var.get())))
+            self._refresh_eval_condition_list()
+            self._refresh_auto_condition_list()
+        self._persist_requirements_catalog()
+        self.status_var.set(f"Status: Loaded {program_type} requirements template")
+
+    def save_iop_requirements_template(self) -> None:
+        self._save_requirements_template("IOP")
+
+    def load_iop_requirements_template(self) -> None:
+        self._load_requirements_template("IOP")
+
+    def save_eval_requirements_template(self) -> None:
+        self._save_requirements_template("EVAL")
+
+    def load_eval_requirements_template(self) -> None:
+        self._load_requirements_template("EVAL")
+
+    def quick_load_default_iop_requirements_template(self) -> None:
+        path = str(self.app_settings.get("default_iop_requirements_template_path", "") or "").strip()
+        if not path or not Path(path).exists():
+            self.status_var.set("Status: Default IOP template path is missing or invalid")
+            return
+        self._load_requirements_template("IOP", path)
+
+    def quick_load_default_eval_requirements_template(self) -> None:
+        path = str(self.app_settings.get("default_eval_requirements_template_path", "") or "").strip()
+        if not path or not Path(path).exists():
+            self.status_var.set("Status: Default EVAL template path is missing or invalid")
+            return
+        self._load_requirements_template("EVAL", path)
+
+    def browse_default_iop_template_path(self) -> None:
+        path = self.filedialog.askopenfilename(title="Select default IOP requirements template", filetypes=[("IOP template", "*.iop_req_template.json"), ("JSON files", "*.json")])
+        if not path:
+            return
+        self.default_iop_template_path_var.set(path)
+        self._save_app_settings_from_ui()
+        self.status_var.set("Status: Default IOP template path saved")
+
+    def clear_default_iop_template_path(self) -> None:
+        self.default_iop_template_path_var.set("")
+        self._save_app_settings_from_ui()
+        self.status_var.set("Status: Cleared default IOP template path")
+
+    def browse_default_eval_template_path(self) -> None:
+        path = self.filedialog.askopenfilename(title="Select default EVAL requirements template", filetypes=[("EVAL template", "*.eval_req_template.json"), ("JSON files", "*.json")])
+        if not path:
+            return
+        self.default_eval_template_path_var.set(path)
+        self._save_app_settings_from_ui()
+        self.status_var.set("Status: Default EVAL template path saved")
+
+    def clear_default_eval_template_path(self) -> None:
+        self.default_eval_template_path_var.set("")
+        self._save_app_settings_from_ui()
+        self.status_var.set("Status: Cleared default EVAL template path")
 
     def add_new_provider(self) -> None:
         name = self.provider_new_var.get().strip()
@@ -3334,6 +3536,7 @@ class SchedulerDesktopApp:
         }
         limits = dict(mapping.get(effort, mapping["high"]))
         limits["max_solve_seconds"] = int(self.app_settings.get("max_solve_seconds", 10))
+        limits["enable_partial_schedule_on_failure"] = bool(self.app_settings.get("enable_partial_schedule_on_failure", False))
         return limits
 
     def _build_auto_profile_template(self) -> Dict[str, Any]:
@@ -3589,6 +3792,13 @@ class SchedulerDesktopApp:
             self._set_generation_controls(False, "")
             self.generation_running_kind = None
 
+    def _failure_report_text(self, result: Dict[str, Any], prefix: str | None = None) -> str:
+        report = result.get("report", {}) if isinstance(result, dict) else {}
+        lines = report.get("bottleneck_lines") or []
+        issues = report.get("issues", [])
+        body = "\n".join(lines) if lines else "\n".join(issues[:5] or ["No detailed bottlenecks available."])
+        return f"{prefix}\n{body}" if prefix else body
+
     def _finish_generation(self, payload: Dict[str, Any]) -> None:
         kind = payload.get("kind")
         result = payload.get("result", {})
@@ -3596,15 +3806,35 @@ class SchedulerDesktopApp:
         self.generation_running_kind = None
 
         if not result.get("ok"):
-            issues = result.get("report", {}).get("issues", [])
-            reason = "\n".join(issues[:5] or ["No detailed bottlenecks available."])
+            reason = self._failure_report_text(result)
+            target = self.auto_report_text if kind == "iop" else self.eval_report_text
+            if bool(result.get("partial")) and bool(self.app_settings.get("enable_partial_schedule_on_failure", False)):
+                profile_template = payload.get("profile_template", {})
+                default_program = payload.get("default_program", "IOP")
+                self._push_manual_undo_snapshot("Load partial generated schedule")
+                self._update_after_auto_generation(profile_template, result, default_program_type=default_program)
+                placed = len(result.get("assignments", {}))
+                total = len(result.get("requests", []))
+                pct = int(round((placed / total) * 100)) if total else 0
+                if "timed out" in reason.lower():
+                    self.status_var.set(f"Status: Timed out at {self.app_settings.get('max_solve_seconds', 10)} seconds — showing best partial schedule ({placed}/{total}, {pct}%).")
+                else:
+                    self.status_var.set(f"Status: Showing best partial schedule ({placed}/{total}, {pct}%).")
+                prefix = f"Partial Schedule — {placed}/{total} Requirements Placed ({pct}%)"
+                unscheduled = result.get("unscheduled_requirements", [])
+                if unscheduled:
+                    lines = [prefix, "", "Unscheduled requirements (most constraining first):"]
+                    for row in unscheduled[:25]:
+                        lines.append(f"- {row.get('requirement_id')} | patient={row.get('patient')} | {row.get('discipline')} {row.get('duration_minutes')}m | day={row.get('day')} | bottleneck={row.get('bottleneck_category') or '(unknown)'}")
+                    reason = prefix + "\n\n" + reason + "\n\n" + "\n".join(lines[2:])
+                self._set_text(target, reason)
+                return
             if "cancelled" in reason.lower():
                 self.status_var.set("Status: Generation cancelled.")
             elif "timed out" in reason.lower():
                 self.status_var.set(f"Status: No solution found within {self.app_settings.get('max_solve_seconds', 10)}s (timed out).")
             else:
                 self.status_var.set("Status: Generation failed")
-            target = self.auto_report_text if kind == "iop" else self.eval_report_text
             self._set_text(target, reason)
             return
 
@@ -3657,10 +3887,12 @@ class SchedulerDesktopApp:
             locked_request_ids=soft_locked_ids,
         )
         if not iop_result.get("ok"):
-            issues = iop_result.get("report", {}).get("issues", [])
             prefix = "IOP preflight feasibility check failed." if iop_result.get("report", {}).get("preflight") else "Combined generation failed during IOP stage."
-            self._set_text(self.eval_report_text, prefix + "\n" + "\n".join(issues[:5] or ["No detailed bottlenecks available."]))
-            self.status_var.set("Status: Combined generation stopped at IOP preflight")
+            if bool(iop_result.get("partial")) and bool(self.app_settings.get("enable_partial_schedule_on_failure", False)):
+                self._push_manual_undo_snapshot("Load partial combined schedule (IOP stage)")
+                self._update_after_auto_generation(profile_template, iop_result, default_program_type="IOP")
+                self.status_var.set("Status: Combined generation IOP stage failed — showing best partial schedule")
+            self._set_text(self.eval_report_text, self._failure_report_text(iop_result, prefix=prefix))
             return
 
         if not self.eval_conditions:
@@ -3674,10 +3906,18 @@ class SchedulerDesktopApp:
             locked_request_ids=soft_locked_ids,
         )
         if not eval_result.get("ok"):
-            issues = eval_result.get("report", {}).get("issues", [])
             prefix = "EVAL preflight feasibility check failed." if eval_result.get("report", {}).get("preflight") else "Combined generation failed during EVAL stage."
-            self._set_text(self.eval_report_text, prefix + "\n" + "\n".join(issues[:5] or ["No detailed bottlenecks available."]))
-            self.status_var.set("Status: Combined generation stopped at EVAL preflight")
+            if bool(eval_result.get("partial")) and bool(self.app_settings.get("enable_partial_schedule_on_failure", False)):
+                self._push_manual_undo_snapshot("Load partial combined schedule (EVAL stage)")
+                merged_partial = {
+                    "ok": False,
+                    "partial": True,
+                    "requests": list(iop_result.get("requests", [])) + list(eval_result.get("requests", [])),
+                    "assignments": {**iop_result.get("assignments", {}), **eval_result.get("assignments", {})},
+                }
+                self._update_after_auto_generation(profile_template, merged_partial, default_program_type="IOP")
+                self.status_var.set("Status: Combined generation EVAL stage failed — showing best partial schedule")
+            self._set_text(self.eval_report_text, self._failure_report_text(eval_result, prefix=prefix))
             return
 
         merged_requests = list(iop_result.get("requests", [])) + list(eval_result.get("requests", []))

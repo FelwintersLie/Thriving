@@ -237,6 +237,199 @@ def _apply_requirement_filters(
     return [r for r in requests if source_by_request_id[r["id"]]["hard_constraint"]]
 
 
+
+
+def _merge_solver_stats(base: Dict[str, float], incoming: Dict[str, Any]) -> Dict[str, float]:
+    out = dict(base)
+    out["nodes_visited"] = float(out.get("nodes_visited", 0)) + float(incoming.get("nodes_visited", 0) or 0)
+    out["backtracks"] = float(out.get("backtracks", 0)) + float(incoming.get("backtracks", 0) or 0)
+    out["zero_option_failures"] = float(out.get("zero_option_failures", 0)) + float(incoming.get("zero_option_failures", 0) or 0)
+    out["elapsed_seconds"] = float(out.get("elapsed_seconds", 0.0)) + float(incoming.get("elapsed_seconds", 0.0) or 0.0)
+    return out
+
+
+def _normalize_partial_assignments(raw: Any, date_key: str) -> Dict[str, Dict[str, Any]]:
+    out: Dict[str, Dict[str, Any]] = {}
+    if not isinstance(raw, dict):
+        return out
+    for rid, assignment in raw.items():
+        if isinstance(assignment, dict):
+            out[rid] = {
+                "request_id": assignment.get("request_id", rid),
+                "provider_id": assignment.get("provider_id"),
+                "room_id": assignment.get("room_id"),
+                "start_minute": int(assignment.get("start_minute", 0)),
+                "end_minute": int(assignment.get("end_minute", 0)),
+                "label": assignment.get("label"),
+                "mode": assignment.get("mode", "individual"),
+                "date_key": assignment.get("date_key", date_key),
+            }
+        else:
+            out[rid] = {
+                "request_id": getattr(assignment, "request_id", rid),
+                "provider_id": getattr(assignment, "provider_id", None),
+                "room_id": getattr(assignment, "room_id", None),
+                "start_minute": int(getattr(assignment, "start_minute", 0)),
+                "end_minute": int(getattr(assignment, "end_minute", 0)),
+                "label": getattr(assignment, "label", None),
+                "mode": getattr(getattr(assignment, "mode", None), "value", getattr(assignment, "mode", "individual")),
+                "date_key": date_key,
+            }
+    return out
+
+def _actionable_suggestion(category: str) -> str:
+    if category == "NO_PROVIDER":
+        return "Add eligible provider for this discipline."
+    if category == "NO_ROOM":
+        return "Relax room constraint or allow another compatible room."
+    if category == "NO_TIME_SLOTS":
+        return "Widen appointment window or reduce sessions/week or duration."
+    return "Reduce overlap pressure or relax constraints for this requirement."
+
+
+def build_bottleneck_report(failure_reasons: List[Dict[str, Any]], solver_stats: Dict[str, Any], limit: int = 5) -> Dict[str, Any]:
+    if not failure_reasons:
+        return {
+            "headline": "No feasible schedule found",
+            "solver_stats": solver_stats,
+            "top_bottlenecks": [],
+        }
+    ranked: Dict[str, Dict[str, Any]] = {}
+    for fr in failure_reasons:
+        key = str(fr.get("stable_requirement_id") or fr.get("requirement_id") or "(unknown)")
+        entry = ranked.setdefault(key, {
+            "stable_requirement_id": key,
+            "hits": 0,
+            "best": fr,
+            "min_provider_candidates": int(fr.get("provider_candidates", 0) or 0),
+            "min_room_candidates": int(fr.get("room_candidates", 0) or 0),
+            "min_time_slot_candidates": int(fr.get("time_slot_candidates", 0) or 0),
+            "earliest_failure_depth": int(fr.get("failure_depth", 999999) or 999999),
+        })
+        entry["hits"] += 1
+        entry["min_provider_candidates"] = min(entry["min_provider_candidates"], int(fr.get("provider_candidates", 0) or 0))
+        entry["min_room_candidates"] = min(entry["min_room_candidates"], int(fr.get("room_candidates", 0) or 0))
+        entry["min_time_slot_candidates"] = min(entry["min_time_slot_candidates"], int(fr.get("time_slot_candidates", 0) or 0))
+        entry["earliest_failure_depth"] = min(entry["earliest_failure_depth"], int(fr.get("failure_depth", 999999) or 999999))
+        best = entry["best"]
+        cur_score = (entry["hits"], -(int(best.get("provider_candidates", 0))+int(best.get("room_candidates", 0))+int(best.get("time_slot_candidates", 0))), -int(best.get("failure_depth", 0) or 0))
+        new_score = (entry["hits"], -(int(fr.get("provider_candidates", 0))+int(fr.get("room_candidates", 0))+int(fr.get("time_slot_candidates", 0))), -int(fr.get("failure_depth", 0) or 0))
+        if new_score > cur_score:
+            entry["best"] = fr
+
+    ordered = sorted(
+        ranked.values(),
+        key=lambda e: (
+            -int(e["hits"]),
+            int(e["min_provider_candidates"]) + int(e["min_room_candidates"]) + int(e["min_time_slot_candidates"]),
+            int(e["earliest_failure_depth"]),
+        ),
+    )[: max(3, min(limit, 10))]
+
+    top: List[Dict[str, Any]] = []
+    for entry in ordered:
+        fr = entry["best"]
+        near_miss = list(fr.get("near_miss_alternatives", []) or [])[:3]
+        relax = list(fr.get("relaxation_suggestions", []) or [])[:3]
+        top.append({
+            "requirement_id": fr.get("stable_requirement_id") or fr.get("requirement_id"),
+            "patient_ids": fr.get("patient_ids", []),
+            "discipline": fr.get("discipline", ""),
+            "duration_minutes": int(fr.get("duration_minutes", 0) or 0),
+            "date_key": fr.get("date_key", ""),
+            "reason_category": fr.get("reason_category", "ALL_CONFLICTS"),
+            "provider_candidates": int(fr.get("provider_candidates", 0) or 0),
+            "room_candidates": int(fr.get("room_candidates", 0) or 0),
+            "time_slot_candidates": int(fr.get("time_slot_candidates", 0) or 0),
+            "why": fr.get("why", ""),
+            "hits": int(entry["hits"]),
+            "suggestion": _actionable_suggestion(str(fr.get("reason_category", "ALL_CONFLICTS"))),
+            "closest_alternatives": near_miss,
+            "minimal_relaxations": relax if relax else [_actionable_suggestion(str(fr.get("reason_category", "ALL_CONFLICTS")))],
+        })
+    return {
+        "headline": "No feasible schedule found",
+        "solver_stats": solver_stats,
+        "top_bottlenecks": top,
+    }
+
+
+def _unscheduled_requirement_rows(
+    *,
+    unscheduled_ids: List[str],
+    requests: List[Dict[str, Any]],
+    failure_reasons: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    req_by_id = {str(r.get("id")): r for r in requests}
+    reason_by_id: Dict[str, Dict[str, Any]] = {}
+    for fr in failure_reasons:
+        rid = str(fr.get("requirement_id") or "")
+        if rid and rid not in reason_by_id:
+            reason_by_id[rid] = fr
+    rows: List[Dict[str, Any]] = []
+    for rid in unscheduled_ids:
+        req = req_by_id.get(rid, {})
+        fr = reason_by_id.get(rid, {})
+        rows.append({
+            "requirement_id": rid,
+            "patient": ",".join(req.get("patient_ids", [])) if isinstance(req.get("patient_ids"), list) else "",
+            "discipline": req.get("discipline", ""),
+            "duration_minutes": int(req.get("duration_minutes", 0) or 0),
+            "day": req.get("date_key", ""),
+            "bottleneck_category": fr.get("reason_category", ""),
+            "closest_alternatives": list(fr.get("near_miss_alternatives", []) or [])[:3],
+            "minimal_relaxations": list(fr.get("relaxation_suggestions", []) or [])[:3],
+            "sort_key": (
+                int(fr.get("provider_candidates", 9999) or 9999)
+                + int(fr.get("room_candidates", 9999) or 9999)
+                + int(fr.get("time_slot_candidates", 9999) or 9999),
+                int(fr.get("failure_depth", 9999) or 9999),
+            ),
+        })
+    rows.sort(key=lambda r: r["sort_key"])
+    for row in rows:
+        row.pop("sort_key", None)
+    return rows
+
+def format_bottleneck_report_lines(report: Dict[str, Any]) -> List[str]:
+    lines = [str(report.get("headline") or "No feasible schedule found")]
+    stats = report.get("solver_stats", {}) or {}
+    lines.append(
+        f"Solver stats: time={float(stats.get('elapsed_seconds', 0.0)):.2f}s, nodes={int(stats.get('nodes_visited', 0))}, backtracks={int(stats.get('backtracks', 0))}, zero-option={int(stats.get('zero_option_failures', 0))}"
+    )
+    top = report.get("top_bottlenecks", []) or []
+    if not top:
+        lines.append("No detailed bottlenecks available.")
+        return lines
+    lines.append("Top bottlenecks:")
+    for idx, item in enumerate(top, start=1):
+        pats = ",".join(item.get("patient_ids") or []) or "(none)"
+        lines.append(
+            f"{idx}. {item.get('requirement_id')} | patients={pats} | {item.get('discipline')} {item.get('duration_minutes')}m | day={item.get('date_key')}"
+        )
+        lines.append(
+            f"   reason={item.get('reason_category')} counts(provider={item.get('provider_candidates')}, room={item.get('room_candidates')}, times={item.get('time_slot_candidates')}) hits={item.get('hits')}"
+        )
+        lines.append(f"   why: {item.get('why')}")
+        alts = item.get("closest_alternatives", []) or []
+        if alts:
+            lines.append("   Closest feasible alternatives:")
+            for alt in alts[:3]:
+                start = alt.get("start_minute")
+                end = alt.get("end_minute")
+                time_text = f"{start}-{end}" if start is not None and end is not None else "(time n/a)"
+                provider = alt.get("provider_id") or "(any)"
+                room = alt.get("room_id") or "(any)"
+                reason = ", ".join(alt.get("reasons", []) or ["OTHER_CONFLICT"])
+                lines.append(f"   - {time_text} | Provider: {provider} | Room: {room} | Conflict: {reason}")
+        relax = item.get("minimal_relaxations", []) or []
+        if relax:
+            lines.append("   Minimal relaxations:")
+            for sug in relax[:3]:
+                lines.append(f"   - {sug}")
+        else:
+            lines.append(f"   suggestion: {item.get('suggestion')}")
+    return lines
 def _solve_multiday(
     *,
     profile_template: Dict[str, Any],
@@ -246,9 +439,10 @@ def _solve_multiday(
     locked_request_ids: List[str] | None = None,
     cancel_event: Any | None = None,
     progress_callback: Any | None = None,
-) -> Tuple[Dict[str, Dict[str, Any]], List[Bottleneck]]:
+) -> Tuple[Dict[str, Dict[str, Any]], List[Bottleneck], Dict[str, Any]]:
     assignments: Dict[str, Dict[str, Any]] = {}
     bottlenecks: List[Bottleneck] = []
+    diagnostics: Dict[str, Any] = {"failure_reasons": [], "solver_stats": {"nodes_visited": 0, "backtracks": 0, "zero_option_failures": 0, "elapsed_seconds": 0.0}}
 
     previous_assignments = previous_assignments or {}
     solver_limits = solver_limits or {}
@@ -279,20 +473,39 @@ def _solve_multiday(
             "max_solve_seconds": solver_limits.get("max_solve_seconds", 10),
             "_cancel_event": cancel_event,
             "_progress_callback": progress_callback,
+            "enable_partial_schedule_on_failure": bool(solver_limits.get("enable_partial_schedule_on_failure", False)),
         }
 
         try:
             result = handle_generate(payload)
             assignments.update(result.get("assignments", {}))
+            if result.get("diagnostics"):
+                diag = result.get("diagnostics", {})
+                diagnostics["failure_reasons"].extend(diag.get("failure_reasons", []))
+                diagnostics["solver_stats"] = _merge_solver_stats(diagnostics.get("solver_stats", {}), diag.get("solver_stats", {}))
         except Exception as exc:
+            exc_diag = getattr(exc, "diagnostics", {}) or {}
+            diagnostics["failure_reasons"].extend(exc_diag.get("failure_reasons", []))
+            diagnostics["solver_stats"] = _merge_solver_stats(diagnostics.get("solver_stats", {}), exc_diag.get("solver_stats", {}))
+            partial = _normalize_partial_assignments(exc_diag.get("partial_assignments", {}), date_key)
+            if partial:
+                assignments.update(partial)
+                diagnostics["partial_assignments"] = {**diagnostics.get("partial_assignments", {}), **partial}
+            if exc_diag.get("unscheduled_request_ids"):
+                diagnostics.setdefault("unscheduled_request_ids", [])
+                diagnostics["unscheduled_request_ids"].extend(list(exc_diag.get("unscheduled_request_ids", [])))
+            if exc_diag.get("scheduled_request_ids"):
+                diagnostics.setdefault("scheduled_request_ids", [])
+                diagnostics["scheduled_request_ids"].extend(list(exc_diag.get("scheduled_request_ids", [])))
+            diagnostics["total_requests"] = int(diagnostics.get("total_requests", 0)) + int(exc_diag.get("total_requests", 0) or 0)
             reason = str(exc)
             if "Generation cancelled" in reason or "timed out" in reason:
+                setattr(exc, "diagnostics", diagnostics)
                 raise
-            # collect per-request failure reasons to keep report actionable
             for request in daily_requests:
                 bottlenecks.append(Bottleneck(request["id"], date_key, reason))
 
-    return assignments, bottlenecks
+    return assignments, bottlenecks, diagnostics
 
 
 def explain_infeasibility(
@@ -544,8 +757,9 @@ def generate_three_week_schedule(
     )
 
     hard_requests = _apply_requirement_filters(expanded_requests, source_by_request_id, hard_only=True)
+    hard_diagnostics: Dict[str, Any] = {"failure_reasons": [], "solver_stats": {}}
     try:
-        hard_assignments, hard_bottlenecks = _solve_multiday(
+        hard_assignments, hard_bottlenecks, hard_diagnostics = _solve_multiday(
             profile_template=profile_template,
             requests=hard_requests,
             previous_assignments=previous_assignments,
@@ -556,37 +770,75 @@ def generate_three_week_schedule(
         )
     except Exception as exc:
         reason = str(exc)
+        diagnostics = getattr(exc, "diagnostics", {}) or {"failure_reasons": [], "solver_stats": {}}
+        partial_assignments = _normalize_partial_assignments(diagnostics.get("partial_assignments", {}), profile_template.get("date_key", ""))
+        bottleneck_report = build_bottleneck_report(diagnostics.get("failure_reasons", []), diagnostics.get("solver_stats", {}))
+        unscheduled_rows = _unscheduled_requirement_rows(
+            unscheduled_ids=list(diagnostics.get("unscheduled_request_ids", [])),
+            requests=expanded_requests,
+            failure_reasons=list(diagnostics.get("failure_reasons", [])),
+        )
+        if partial_assignments:
+            total = int(diagnostics.get("total_requests", len(expanded_requests)) or len(expanded_requests))
+            placed = len(partial_assignments)
+            pct = int(round((placed / total) * 100)) if total else 0
+            prefix = f"Partial Schedule — {placed}/{total} Requirements Placed ({pct}%)"
+            bottleneck_lines = [prefix] + format_bottleneck_report_lines(bottleneck_report)
+        else:
+            bottleneck_lines = format_bottleneck_report_lines(bottleneck_report)
         return {
             "ok": False,
-            "assignments": {},
+            "partial": bool(partial_assignments),
+            "assignments": partial_assignments,
             "requests": expanded_requests,
             "bottlenecks": [],
-            "report": {"ok": False, "issues": [reason], "preflight": False},
+            "unscheduled_requirements": unscheduled_rows,
+            "report": {"ok": False, "issues": [reason], "preflight": False, "bottleneck_report": bottleneck_report, "bottleneck_lines": bottleneck_lines},
+            "diagnostics": diagnostics,
             "diff": {"unchanged": 0, "moved": 0, "added": 0, "removed": 0, "by_date": {}},
         }
 
     if hard_bottlenecks:
+        pre = explain_infeasibility(
+            validated,
+            profile_template["planning_dates"],
+            profile_template["providers"],
+            profile_template["rooms"],
+            patient_ids,
+        )
+        partial_assignments = _normalize_partial_assignments(hard_diagnostics.get("partial_assignments", {}), profile_template.get("date_key", ""))
+        bottleneck_report = build_bottleneck_report(hard_diagnostics.get("failure_reasons", []), hard_diagnostics.get("solver_stats", {}))
+        lines = format_bottleneck_report_lines(bottleneck_report)
+        if partial_assignments:
+            total = int(hard_diagnostics.get("total_requests", len(expanded_requests)) or len(expanded_requests))
+            placed = len(partial_assignments)
+            pct = int(round((placed / total) * 100)) if total else 0
+            lines = [f"Partial Schedule — {placed}/{total} Requirements Placed ({pct}%)"] + lines
+        pre["bottleneck_report"] = bottleneck_report
+        pre["bottleneck_lines"] = lines
         return {
             "ok": False,
-            "assignments": {},
+            "partial": bool(partial_assignments),
+            "assignments": partial_assignments,
             "requests": expanded_requests,
             "bottlenecks": [b.__dict__ for b in hard_bottlenecks],
-            "report": explain_infeasibility(
-                validated,
-                profile_template["planning_dates"],
-                profile_template["providers"],
-                profile_template["rooms"],
-                patient_ids,
+            "unscheduled_requirements": _unscheduled_requirement_rows(
+                unscheduled_ids=[r.get("id") for r in expanded_requests if isinstance(r, dict)],
+                requests=expanded_requests,
+                failure_reasons=list(hard_diagnostics.get("failure_reasons", [])),
             ),
+            "report": pre,
+            "diagnostics": hard_diagnostics,
             "diff": {"unchanged": 0, "moved": 0, "added": 0, "removed": 0, "by_date": {}},
         }
 
     soft_requests = [r for r in expanded_requests if not source_by_request_id[r["id"]]["hard_constraint"]]
     merged_assignments = dict(hard_assignments)
     soft_bottlenecks: List[Bottleneck] = []
+    soft_diagnostics: Dict[str, Any] = {"failure_reasons": [], "solver_stats": {}}
     if soft_requests:
         try:
-            soft_assignments, soft_bottlenecks = _solve_multiday(
+            soft_assignments, soft_bottlenecks, soft_diagnostics = _solve_multiday(
                 profile_template=profile_template,
                 requests=soft_requests,
                 previous_assignments=previous_assignments,
@@ -597,23 +849,49 @@ def generate_three_week_schedule(
             )
         except Exception as exc:
             reason = str(exc)
+            diagnostics = getattr(exc, "diagnostics", {}) or {"failure_reasons": [], "solver_stats": {}}
+            partial_assignments = _normalize_partial_assignments(diagnostics.get("partial_assignments", {}), profile_template.get("date_key", ""))
+            merged_partial = {**merged_assignments, **partial_assignments}
+            bottleneck_report = build_bottleneck_report(diagnostics.get("failure_reasons", []), diagnostics.get("solver_stats", {}))
+            unscheduled_rows = _unscheduled_requirement_rows(
+                unscheduled_ids=list(diagnostics.get("unscheduled_request_ids", [])),
+                requests=expanded_requests,
+                failure_reasons=list(diagnostics.get("failure_reasons", [])),
+            )
+            if merged_partial:
+                total = int(diagnostics.get("total_requests", len(expanded_requests)) or len(expanded_requests))
+                placed = len(merged_partial)
+                pct = int(round((placed / total) * 100)) if total else 0
+                bottleneck_lines = [f"Partial Schedule — {placed}/{total} Requirements Placed ({pct}%)"] + format_bottleneck_report_lines(bottleneck_report)
+            else:
+                bottleneck_lines = format_bottleneck_report_lines(bottleneck_report)
             return {
                 "ok": False,
-                "assignments": {},
+                "partial": bool(merged_partial),
+                "assignments": merged_partial,
                 "requests": expanded_requests,
                 "bottlenecks": [],
-                "report": {"ok": False, "issues": [reason], "preflight": False},
+                "unscheduled_requirements": unscheduled_rows,
+                "report": {"ok": False, "issues": [reason], "preflight": False, "bottleneck_report": bottleneck_report, "bottleneck_lines": bottleneck_lines},
+                "diagnostics": diagnostics,
                 "diff": {"unchanged": 0, "moved": 0, "added": 0, "removed": 0, "by_date": {}},
             }
         merged_assignments.update(soft_assignments)
 
     diff = diff_assignments(previous_assignments or {}, merged_assignments)
+    merged_diagnostics = {
+        "failure_reasons": list(hard_diagnostics.get("failure_reasons", [])) + list(soft_diagnostics.get("failure_reasons", [])),
+        "solver_stats": _merge_solver_stats(hard_diagnostics.get("solver_stats", {}), soft_diagnostics.get("solver_stats", {})),
+    }
     return {
         "ok": True,
+        "partial": False,
         "assignments": merged_assignments,
         "requests": expanded_requests,
         "bottlenecks": [b.__dict__ for b in soft_bottlenecks],
+        "unscheduled_requirements": [],
         "report": {"ok": True, "issues": []},
+        "diagnostics": merged_diagnostics,
         "diff": diff,
     }
 
@@ -784,11 +1062,20 @@ def generate_combined_schedule(
         locked_request_ids=locked_request_ids,
     )
     merged = {**iop.get("assignments", {}), **eval_result.get("assignments", {})}
+    merged_diagnostics = {
+        "failure_reasons": list(iop.get("diagnostics", {}).get("failure_reasons", [])) + list(eval_result.get("diagnostics", {}).get("failure_reasons", [])),
+        "solver_stats": _merge_solver_stats(iop.get("diagnostics", {}).get("solver_stats", {}), eval_result.get("diagnostics", {}).get("solver_stats", {})),
+    }
+    bottleneck_report = build_bottleneck_report(merged_diagnostics.get("failure_reasons", []), merged_diagnostics.get("solver_stats", {}))
     return {
         "ok": bool(iop.get("ok")) and bool(eval_result.get("ok")),
+        "partial": bool(iop.get("partial")) or bool(eval_result.get("partial")),
         "assignments": merged,
         "requests": list(iop.get("requests", [])) + list(eval_result.get("requests", [])),
         "bottlenecks": list(iop.get("bottlenecks", [])) + list(eval_result.get("bottlenecks", [])),
+        "unscheduled_requirements": list(iop.get("unscheduled_requirements", [])) + list(eval_result.get("unscheduled_requirements", [])),
+        "report": {"ok": bool(iop.get("ok")) and bool(eval_result.get("ok")), "issues": list(iop.get("report", {}).get("issues", [])) + list(eval_result.get("report", {}).get("issues", [])), "bottleneck_report": bottleneck_report, "bottleneck_lines": format_bottleneck_report_lines(bottleneck_report)},
+        "diagnostics": merged_diagnostics,
         "diff": diff_assignments(previous_assignments or {}, merged),
         "move_report": {
             "unchanged": iop.get("diff", {}).get("unchanged", 0) + eval_result.get("diff", {}).get("unchanged", 0),
@@ -827,7 +1114,7 @@ def generate_eval_schedule(
 
     profile = _deepcopy_json(profile_template)
     profile["planning_dates"] = sorted(dict.fromkeys(list(profile.get("planning_dates", [])) + eval_dates))
-    assignments, bottlenecks = _solve_multiday(
+    assignments, bottlenecks, eval_diagnostics = _solve_multiday(
         profile_template=profile,
         requests=requests,
         previous_assignments=previous_assignments,
@@ -835,19 +1122,30 @@ def generate_eval_schedule(
         locked_request_ids=locked_request_ids,
     )
     if bottlenecks:
+        bottleneck_report = build_bottleneck_report(eval_diagnostics.get("failure_reasons", []), eval_diagnostics.get("solver_stats", {}))
         return {
             "ok": False,
+            "partial": bool(assignments),
             "assignments": assignments,
             "requests": requests,
             "bottlenecks": [b.__dict__ for b in bottlenecks],
-            "report": {"ok": False, "issues": [b.reason for b in bottlenecks[:25]]},
+            "unscheduled_requirements": _unscheduled_requirement_rows(
+                unscheduled_ids=list(eval_diagnostics.get("unscheduled_request_ids", [])),
+                requests=requests,
+                failure_reasons=list(eval_diagnostics.get("failure_reasons", [])),
+            ),
+            "report": {"ok": False, "issues": [b.reason for b in bottlenecks[:25]], "bottleneck_report": bottleneck_report, "bottleneck_lines": format_bottleneck_report_lines(bottleneck_report)},
+            "diagnostics": eval_diagnostics,
             "diff": diff_assignments(previous_assignments or {}, assignments),
         }
     return {
         "ok": True,
+        "partial": False,
         "assignments": assignments,
         "requests": requests,
         "bottlenecks": [],
+        "unscheduled_requirements": [],
         "report": {"ok": True, "issues": []},
+        "diagnostics": eval_diagnostics,
         "diff": diff_assignments(previous_assignments or {}, assignments),
     }

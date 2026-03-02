@@ -160,6 +160,24 @@ class GenerationCancelledError(UnschedulableError):
     pass
 
 
+@dataclass
+class FailureReason:
+    requirement_id: str
+    stable_requirement_id: str
+    patient_ids: List[str]
+    discipline: str
+    duration_minutes: int
+    date_key: str
+    reason_category: str
+    provider_candidates: int
+    room_candidates: int
+    time_slot_candidates: int
+    why: str
+    failure_depth: int = 0
+    near_miss_alternatives: List[Dict[str, object]] = field(default_factory=list)
+    relaxation_suggestions: List[str] = field(default_factory=list)
+
+
 class ScheduleEngine:
     """
     Constraint-based scheduler with composable hard/soft rules and diagnostic logging.
@@ -168,6 +186,8 @@ class ScheduleEngine:
     def __init__(self) -> None:
         self.logger = logging.getLogger("app.scheduler")
         self.last_diagnostics: List[str] = []
+        self.last_failure_reasons: List[FailureReason] = []
+        self.last_solver_stats: Dict[str, float] = {}
 
     def generate_schedule(
         self,
@@ -186,6 +206,7 @@ class ScheduleEngine:
         max_solve_seconds: Optional[float] = None,
         cancel_event: Optional[object] = None,
         progress_callback: Optional[Callable[[Dict[str, object]], None]] = None,
+        enable_partial_schedule_on_failure: bool = False,
     ) -> Dict[str, Assignment]:
         previous_assignments = previous_assignments or {}
         locked_request_ids = locked_request_ids or set()
@@ -197,6 +218,8 @@ class ScheduleEngine:
             solve_timeout_seconds = MAX_SOLVE_SECONDS
         start_perf = time.perf_counter()
 
+        self.last_failure_reasons = []
+        self.last_solver_stats = {"nodes_visited": 0, "backtracks": 0, "zero_option_failures": 0, "elapsed_seconds": 0.0}
         self._validate_input_sizes(requests=requests, providers=providers, patients=patients, rooms=rooms, day_window=day_window)
 
         patient_by_id = {p.id: p for p in patients}
@@ -206,38 +229,45 @@ class ScheduleEngine:
         if len(request_by_id) != len(requests):
             raise ValueError("Duplicate request IDs detected")
 
-        candidate_map = self._build_candidate_map(
-            date_key=date_key,
-            weekday=weekday,
-            requests=requests,
-            providers=providers,
-            patients=patients,
-            rooms=rooms,
-            day_window=day_window,
-            previous_assignments=previous_assignments,
-            locked_request_ids=locked_request_ids,
-            candidate_limit=candidate_limit,
-            solve_start_perf=start_perf,
-            solve_timeout_seconds=solve_timeout_seconds,
-            cancel_event=cancel_event,
-            progress_callback=progress_callback,
-        )
-        solution = self._solve_with_constraints(
-            requests=requests,
-            candidate_map=candidate_map,
-            previous_assignments=previous_assignments,
-            max_backtrack_states=max_backtrack_states,
-            rooms=rooms,
-            providers=providers,
-            date_key=date_key,
-            weekday=weekday,
-            day_window=day_window,
-            solve_start_perf=start_perf,
-            solve_timeout_seconds=solve_timeout_seconds,
-            cancel_event=cancel_event,
-            progress_callback=progress_callback,
-        )
-        return solution
+        try:
+            candidate_map = self._build_candidate_map(
+                date_key=date_key,
+                weekday=weekday,
+                requests=requests,
+                providers=providers,
+                patients=patients,
+                rooms=rooms,
+                day_window=day_window,
+                previous_assignments=previous_assignments,
+                locked_request_ids=locked_request_ids,
+                candidate_limit=candidate_limit,
+                solve_start_perf=start_perf,
+                solve_timeout_seconds=solve_timeout_seconds,
+                cancel_event=cancel_event,
+                progress_callback=progress_callback,
+            )
+            solution = self._solve_with_constraints(
+                requests=requests,
+                candidate_map=candidate_map,
+                previous_assignments=previous_assignments,
+                max_backtrack_states=max_backtrack_states,
+                rooms=rooms,
+                providers=providers,
+                date_key=date_key,
+                weekday=weekday,
+                day_window=day_window,
+                solve_start_perf=start_perf,
+                solve_timeout_seconds=solve_timeout_seconds,
+                cancel_event=cancel_event,
+                progress_callback=progress_callback,
+                enable_partial_schedule_on_failure=enable_partial_schedule_on_failure,
+            )
+            return solution
+        except Exception as exc:
+            self.last_solver_stats["elapsed_seconds"] = time.perf_counter() - start_perf
+            if not hasattr(exc, "diagnostics"):
+                setattr(exc, "diagnostics", {"failure_reasons": [fr.__dict__ for fr in self.last_failure_reasons], "solver_stats": dict(self.last_solver_stats)})
+            raise
 
     def _build_candidate_map(
         self,
@@ -289,6 +319,7 @@ class ScheduleEngine:
                 "provider": 0,
             }
             options: List[Assignment] = []
+            near_misses: List[Dict[str, object]] = []
             provider_pool: List[Optional[Provider]] = [None] if req.provider_id == "NO_PROVIDER" else list(providers)
             for provider in provider_pool:
                 attempts += 1
@@ -311,12 +342,15 @@ class ScheduleEngine:
                 if provider is not None:
                     if req.discipline not in provider.disciplines:
                         rejection_counts["provider_discipline"] += 1
+                        near_misses.append({"provider_id": provider.id, "room_id": None, "start_minute": None, "end_minute": None, "reasons": ["PROVIDER_CONSTRAINT"], "violation_count": 1, "time_deviation": 0, "overlap_minutes": 0})
                         continue
                     if req.provider_id and provider.id != req.provider_id:
                         rejection_counts["provider_specific"] += 1
+                        near_misses.append({"provider_id": provider.id, "room_id": None, "start_minute": None, "end_minute": None, "reasons": ["PROVIDER_CONSTRAINT"], "violation_count": 1, "time_deviation": 0, "overlap_minutes": 0})
                         continue
                     if req.provider_ids and provider.id not in req.provider_ids:
                         rejection_counts["provider_specific"] += 1
+                        near_misses.append({"provider_id": provider.id, "room_id": None, "start_minute": None, "end_minute": None, "reasons": ["PROVIDER_CONSTRAINT"], "violation_count": 1, "time_deviation": 0, "overlap_minutes": 0})
                         continue
 
                 for room in rooms:
@@ -326,6 +360,7 @@ class ScheduleEngine:
                         continue
                     if req.discipline not in room.allowed_disciplines:
                         rejection_counts["room_discipline"] += 1
+                        near_misses.append({"provider_id": provider.id if provider else None, "room_id": room.id, "start_minute": None, "end_minute": None, "reasons": ["MODE_CONSTRAINT"], "violation_count": 1, "time_deviation": 0, "overlap_minutes": 0})
                         continue
                     if len(req.patient_ids) > room.capacity:
                         continue
@@ -336,12 +371,15 @@ class ScheduleEngine:
                             break
                         if provider is not None and not provider.is_available(date_key, weekday, start, end):
                             rejection_counts["provider"] += 1
+                            near_misses.append({"provider_id": provider.id if provider else None, "room_id": room.id, "start_minute": start, "end_minute": end, "reasons": ["PROVIDER_BUSY"], "violation_count": 1, "time_deviation": self._time_deviation(req, start, end), "overlap_minutes": 15})
                             continue
                         if not room.is_available(date_key, weekday, start, end):
                             rejection_counts["room_rules"] += 1
+                            near_misses.append({"provider_id": provider.id if provider else None, "room_id": room.id, "start_minute": start, "end_minute": end, "reasons": ["ROOM_RULE_VIOLATION"], "violation_count": 1, "time_deviation": self._time_deviation(req, start, end), "overlap_minutes": 15})
                             continue
                         if not all(patient_by_id[p].is_available(date_key, start, end) for p in req.patient_ids):
                             rejection_counts["patient"] += 1
+                            near_misses.append({"provider_id": provider.id if provider else None, "room_id": room.id, "start_minute": start, "end_minute": end, "reasons": ["TIME_WINDOW_VIOLATION"], "violation_count": 1, "time_deviation": self._time_deviation(req, start, end), "overlap_minutes": 15})
                             continue
                         options.append(
                             Assignment(
@@ -359,9 +397,49 @@ class ScheduleEngine:
                                 f"Request {req.id} has too many options ({len(options)}). Narrow time windows or reduce resources."
                             )
             if not options:
+                provider_candidates = len([
+                    p for p in providers
+                    if req.discipline in p.disciplines
+                    and (not req.provider_id or req.provider_id == "NO_PROVIDER" or p.id == req.provider_id)
+                    and (not req.provider_ids or p.id in req.provider_ids)
+                ]) if req.provider_id != "NO_PROVIDER" else 1
+                room_candidates = len([
+                    r for r in rooms
+                    if (not req.room_id or r.id == req.room_id)
+                    and req.discipline in r.allowed_disciplines
+                    and len(req.patient_ids) <= r.capacity
+                ])
+                reason_category = "NO_TIME_SLOTS"
+                if provider_candidates <= 0:
+                    reason_category = "NO_PROVIDER"
+                elif room_candidates <= 0:
+                    reason_category = "NO_ROOM"
+                why = (
+                    f"0 providers have discipline {req.discipline}" if reason_category == "NO_PROVIDER" else
+                    (f"No eligible rooms for discipline {req.discipline}" if reason_category == "NO_ROOM" else "No provider/room/time window overlap produced a slot")
+                )
+                self.last_failure_reasons.append(FailureReason(
+                    requirement_id=req.id,
+                    stable_requirement_id=req.id.split("|")[0],
+                    patient_ids=list(req.patient_ids),
+                    discipline=req.discipline,
+                    duration_minutes=req.duration_minutes,
+                    date_key=req.date_key,
+                    reason_category=reason_category,
+                    provider_candidates=max(provider_candidates, 0),
+                    room_candidates=max(room_candidates, 0),
+                    time_slot_candidates=0,
+                    why=why,
+                    failure_depth=0,
+                    near_miss_alternatives=self._rank_near_misses(near_misses, limit=10),
+                    relaxation_suggestions=self._relaxation_suggestions(reason_category),
+                ))
+                self.last_solver_stats["zero_option_failures"] = self.last_solver_stats.get("zero_option_failures", 0) + 1
                 reason = ", ".join(f"{k}={v}" for k, v in rejection_counts.items() if v > 0)
                 self._log_constraint_failure(req.id, reason or "no feasible candidates")
-                raise UnschedulableError(f"No feasible options for request {req.id}{f' ({reason})' if reason else ''}")
+                err = UnschedulableError(f"No feasible options for request {req.id}{f' ({reason})' if reason else ''}")
+                setattr(err, "diagnostics", {"failure_reasons": [fr.__dict__ for fr in self.last_failure_reasons], "solver_stats": dict(self.last_solver_stats), "scheduled_request_ids": [], "unscheduled_request_ids": [req.id], "total_requests": 1})
+                raise err
             candidates[req.id] = options
             self._log_decision(f"Request {req.id} generated {len(options)} candidates")
         return candidates
@@ -382,6 +460,7 @@ class ScheduleEngine:
         solve_timeout_seconds: float,
         cancel_event: Optional[object],
         progress_callback: Optional[Callable[[Dict[str, object]], None]],
+        enable_partial_schedule_on_failure: bool = False,
     ) -> Dict[str, Assignment]:
         backtrack_limit = max_backtrack_states or MAX_BACKTRACK_STATES
         backtrack_limit = max(1000, min(int(backtrack_limit), MAX_BACKTRACK_STATES_HARD_CAP))
@@ -430,8 +509,11 @@ class ScheduleEngine:
         best: Optional[Dict[str, Assignment]] = None
         best_score: Optional[int] = None
         states = 0
+        backtracks = 0
         conflict_logs = 0
         most_constrained = sorted_ids[0] if sorted_ids else "(none)"
+        best_partial: Dict[str, Assignment] = {}
+        best_partial_count = 0
 
         provider_by_id = {p.id: p for p in providers}
 
@@ -453,7 +535,7 @@ class ScheduleEngine:
             return False
 
         def dfs(index: int, assigned: Dict[str, Assignment], running_penalty: int) -> None:
-            nonlocal best, best_score, states, conflict_logs
+            nonlocal best, best_score, states, conflict_logs, backtracks, best_partial, best_partial_count
             states += 1
             if cancel_event is not None and hasattr(cancel_event, "is_set") and cancel_event.is_set():
                 raise GenerationCancelledError("Generation cancelled.")
@@ -465,6 +547,9 @@ class ScheduleEngine:
                 )
             if states > backtrack_limit:
                 raise UnschedulableError("Search limit reached while scheduling. Narrow windows or increase solver effort.")
+            if enable_partial_schedule_on_failure and len(assigned) > best_partial_count:
+                best_partial = dict(assigned)
+                best_partial_count = len(assigned)
             if index == len(sorted_ids):
                 for provider in provider_by_id.values():
                     if not _has_lunch_slot(provider, assigned):
@@ -488,6 +573,10 @@ class ScheduleEngine:
                     "patients": list(req.patient_ids),
                 })
             options = sorted(candidate_map[rid], key=lambda c: soft_score(rid, c))
+            had_non_conflict = False
+            min_conflict_providers = len({o.provider_id for o in options if o.provider_id})
+            min_conflict_rooms = len({o.room_id for o in options})
+            min_conflict_times = len({(o.start_minute, o.end_minute) for o in options})
             for option in options:
                 if cancel_event is not None and hasattr(cancel_event, "is_set") and cancel_event.is_set():
                     raise GenerationCancelledError("Generation cancelled.")
@@ -506,16 +595,99 @@ class ScheduleEngine:
                 next_penalty = running_penalty + soft_score(rid, option)
                 if best_score is not None and next_penalty >= best_score:
                     continue
+                had_non_conflict = True
                 assigned[rid] = option
                 self._log_decision(f"Assign {rid} -> {option.room_id}@{option.start_minute} provider={option.provider_id}")
                 dfs(index + 1, assigned, next_penalty)
                 del assigned[rid]
+            if not had_non_conflict and options:
+                req = request_by_id[rid]
+                conflict_alts: List[Dict[str, object]] = []
+                for option in options[:20]:
+                    conflict_reason = hard_conflict(rid, option, assigned) or "OTHER_CONFLICT"
+                    mapped = "OTHER_CONFLICT"
+                    if str(conflict_reason).startswith("provider_conflict"):
+                        mapped = "PROVIDER_BUSY"
+                    elif str(conflict_reason).startswith("room_conflict"):
+                        mapped = "ROOM_BUSY"
+                    conflict_alts.append({
+                        "provider_id": option.provider_id,
+                        "room_id": option.room_id,
+                        "start_minute": option.start_minute,
+                        "end_minute": option.end_minute,
+                        "reasons": [mapped],
+                        "violation_count": 1,
+                        "time_deviation": self._time_deviation(req, option.start_minute, option.end_minute),
+                        "overlap_minutes": 15,
+                    })
+                self.last_failure_reasons.append(FailureReason(
+                    requirement_id=rid,
+                    stable_requirement_id=rid.split("|")[0],
+                    patient_ids=list(req.patient_ids),
+                    discipline=req.discipline,
+                    duration_minutes=req.duration_minutes,
+                    date_key=req.date_key,
+                    reason_category="ALL_CONFLICTS",
+                    provider_candidates=max(min_conflict_providers, 0),
+                    room_candidates=max(min_conflict_rooms, 0),
+                    time_slot_candidates=max(min_conflict_times, 0),
+                    why="Candidates exist but all conflict with already placed items.",
+                    failure_depth=index,
+                    near_miss_alternatives=self._rank_near_misses(conflict_alts, limit=10),
+                    relaxation_suggestions=self._relaxation_suggestions("ALL_CONFLICTS"),
+                ))
+            backtracks += 1
 
         dfs(0, {}, 0)
         self._log_decision(f"Backtracking attempts={states}")
+        elapsed = time.perf_counter() - solve_start_perf
+        self.last_solver_stats = {
+            "nodes_visited": states,
+            "backtracks": backtracks,
+            "zero_option_failures": self.last_solver_stats.get("zero_option_failures", 0),
+            "elapsed_seconds": elapsed,
+        }
         if best is None:
-            raise UnschedulableError("No full solution found for the day; all candidate combinations violate hard constraints.")
+            err = UnschedulableError("No full solution found for the day; all candidate combinations violate hard constraints.")
+            diagnostics = {"failure_reasons": [fr.__dict__ for fr in self.last_failure_reasons], "solver_stats": dict(self.last_solver_stats)}
+            if enable_partial_schedule_on_failure and best_partial:
+                diagnostics["partial_assignments"] = dict(best_partial)
+                diagnostics["scheduled_request_ids"] = sorted(best_partial.keys())
+                diagnostics["unscheduled_request_ids"] = sorted([rid for rid in request_by_id.keys() if rid not in best_partial])
+                diagnostics["total_requests"] = len(request_by_id)
+            setattr(err, "diagnostics", diagnostics)
+            raise err
         return best
+
+    def _time_deviation(self, req: SessionRequest, start: int, end: int) -> int:
+        if req.preferred_window is None:
+            return 0
+        if req.preferred_window.contains(start, end):
+            return 0
+        if end <= req.preferred_window.start_minute:
+            return req.preferred_window.start_minute - end
+        if start >= req.preferred_window.end_minute:
+            return start - req.preferred_window.end_minute
+        return 0
+
+    def _rank_near_misses(self, near_misses: List[Dict[str, object]], limit: int = 10) -> List[Dict[str, object]]:
+        return sorted(
+            near_misses,
+            key=lambda x: (
+                int(x.get("violation_count", 9)),
+                int(x.get("time_deviation", 9999)),
+                int(x.get("overlap_minutes", 9999)),
+            ),
+        )[:limit]
+
+    def _relaxation_suggestions(self, category: str) -> List[str]:
+        if category == "NO_PROVIDER":
+            return ["Allow any provider instead of fixed provider.", "Add eligible provider for this discipline."]
+        if category == "NO_ROOM":
+            return ["Allow an additional compatible room.", "Relax room restriction for this requirement."]
+        if category == "NO_TIME_SLOTS":
+            return ["Widen appointment window by 30 minutes.", "Reduce duration by one slot (15 minutes).", "Reduce sessions/week by 1."]
+        return ["Widen appointment window by 30 minutes.", "Allow additional provider or room options."]
 
     def _log_constraint_failure(self, request_id: str, reason: str) -> None:
         message = f"constraint_failure request={request_id} reason={reason}"
