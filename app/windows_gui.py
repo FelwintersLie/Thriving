@@ -1165,6 +1165,7 @@ class SchedulerDesktopApp:
             "discipline",
             "duration_minutes",
             "frequency_week",
+            "allowed_days",
             "provider_constraint",
             "room_constraint",
             "time_window",
@@ -1195,6 +1196,7 @@ class SchedulerDesktopApp:
             "discipline": "Discipline",
             "duration_minutes": "Duration (minutes)",
             "frequency_week": "Frequency / Week",
+            "allowed_days": "Allowed Days",
             "provider_constraint": "Provider Constraint",
             "room_constraint": "Room Constraint",
             "time_window": "Time Window / Preferred",
@@ -1357,6 +1359,7 @@ class SchedulerDesktopApp:
             "discipline": "Discipline",
             "duration_minutes": "Duration (minutes)",
             "frequency_week": "Frequency / Week",
+            "allowed_days": "Allowed Days",
             "provider_constraint": "Provider Constraint",
             "room_constraint": "Room Constraint",
             "time_window": "Time Window / Preferred",
@@ -3507,6 +3510,21 @@ class SchedulerDesktopApp:
                 return idx
         return None
 
+    def _format_allowed_days(self, condition: Dict[str, Any]) -> str:
+        weekdays = []
+        for d in condition.get("weekdays", []) or []:
+            try:
+                di = int(d)
+            except Exception:
+                continue
+            if 0 <= di <= 4:
+                weekdays.append(di)
+        weekdays = sorted(set(weekdays))
+        labels = ["Mon", "Tue", "Wed", "Thu", "Fri"]
+        if not weekdays or weekdays == [0, 1, 2, 3, 4]:
+            return "Any"
+        return ",".join(labels[d] for d in weekdays)
+
     def _requirement_table_row(self, source_program: str, condition: Dict[str, Any]) -> Dict[str, str]:
         patient_scope = condition.get("patient_scope", "")
         patient_ids = condition.get("patient_ids", [])
@@ -3523,6 +3541,7 @@ class SchedulerDesktopApp:
         elif source_program == "EVAL":
             weekday_names = ["Mon", "Tue", "Wed", "Thu", "Fri"]
             freq = ",".join(weekday_names[d] for d in condition.get("weekdays", []) if 0 <= d < len(weekday_names)) or freq
+        allowed_days = self._format_allowed_days(condition)
         notes = "hard" if condition.get("hard_constraint", True) else "soft"
         notes = f"{notes}; mode={condition.get('session_mode', '')}"
 
@@ -3533,6 +3552,7 @@ class SchedulerDesktopApp:
             "discipline": str(condition.get("discipline", "")),
             "duration_minutes": str(condition.get("duration_minutes", "")),
             "frequency_week": freq,
+            "allowed_days": allowed_days,
             "provider_constraint": provider_text,
             "room_constraint": room_text,
             "time_window": time_window,
@@ -3555,6 +3575,14 @@ class SchedulerDesktopApp:
                 elif digits:
                     break
             return int(digits) if digits else 0
+        if column == "allowed_days":
+            text = str(value).strip()
+            if text == "Any":
+                return (1, "")
+            order = {"Mon": 0, "Tue": 1, "Wed": 2, "Thu": 3, "Fri": 4}
+            parts = [p.strip() for p in text.split(",") if p.strip()]
+            key = tuple(order.get(p, 99) for p in parts)
+            return (0, key, text)
         if column == "time_window":
             text = str(value).strip()
             if not text:
