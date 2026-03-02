@@ -204,6 +204,7 @@ class ScheduleEngine:
         max_solve_seconds: Optional[float] = None,
         cancel_event: Optional[object] = None,
         progress_callback: Optional[Callable[[Dict[str, object]], None]] = None,
+        enable_partial_schedule_on_failure: bool = False,
     ) -> Dict[str, Assignment]:
         previous_assignments = previous_assignments or {}
         locked_request_ids = locked_request_ids or set()
@@ -257,6 +258,7 @@ class ScheduleEngine:
                 solve_timeout_seconds=solve_timeout_seconds,
                 cancel_event=cancel_event,
                 progress_callback=progress_callback,
+                enable_partial_schedule_on_failure=enable_partial_schedule_on_failure,
             )
             return solution
         except Exception as exc:
@@ -424,7 +426,7 @@ class ScheduleEngine:
                 reason = ", ".join(f"{k}={v}" for k, v in rejection_counts.items() if v > 0)
                 self._log_constraint_failure(req.id, reason or "no feasible candidates")
                 err = UnschedulableError(f"No feasible options for request {req.id}{f' ({reason})' if reason else ''}")
-                setattr(err, "diagnostics", {"failure_reasons": [fr.__dict__ for fr in self.last_failure_reasons], "solver_stats": dict(self.last_solver_stats)})
+                setattr(err, "diagnostics", {"failure_reasons": [fr.__dict__ for fr in self.last_failure_reasons], "solver_stats": dict(self.last_solver_stats), "scheduled_request_ids": [], "unscheduled_request_ids": [req.id], "total_requests": 1})
                 raise err
             candidates[req.id] = options
             self._log_decision(f"Request {req.id} generated {len(options)} candidates")
@@ -446,6 +448,7 @@ class ScheduleEngine:
         solve_timeout_seconds: float,
         cancel_event: Optional[object],
         progress_callback: Optional[Callable[[Dict[str, object]], None]],
+        enable_partial_schedule_on_failure: bool = False,
     ) -> Dict[str, Assignment]:
         backtrack_limit = max_backtrack_states or MAX_BACKTRACK_STATES
         backtrack_limit = max(1000, min(int(backtrack_limit), MAX_BACKTRACK_STATES_HARD_CAP))
@@ -497,6 +500,8 @@ class ScheduleEngine:
         backtracks = 0
         conflict_logs = 0
         most_constrained = sorted_ids[0] if sorted_ids else "(none)"
+        best_partial: Dict[str, Assignment] = {}
+        best_partial_count = 0
 
         provider_by_id = {p.id: p for p in providers}
 
@@ -518,7 +523,7 @@ class ScheduleEngine:
             return False
 
         def dfs(index: int, assigned: Dict[str, Assignment], running_penalty: int) -> None:
-            nonlocal best, best_score, states, conflict_logs, backtracks
+            nonlocal best, best_score, states, conflict_logs, backtracks, best_partial, best_partial_count
             states += 1
             if cancel_event is not None and hasattr(cancel_event, "is_set") and cancel_event.is_set():
                 raise GenerationCancelledError("Generation cancelled.")
@@ -530,6 +535,9 @@ class ScheduleEngine:
                 )
             if states > backtrack_limit:
                 raise UnschedulableError("Search limit reached while scheduling. Narrow windows or increase solver effort.")
+            if enable_partial_schedule_on_failure and len(assigned) > best_partial_count:
+                best_partial = dict(assigned)
+                best_partial_count = len(assigned)
             if index == len(sorted_ids):
                 for provider in provider_by_id.values():
                     if not _has_lunch_slot(provider, assigned):
@@ -609,7 +617,13 @@ class ScheduleEngine:
         }
         if best is None:
             err = UnschedulableError("No full solution found for the day; all candidate combinations violate hard constraints.")
-            setattr(err, "diagnostics", {"failure_reasons": [fr.__dict__ for fr in self.last_failure_reasons], "solver_stats": dict(self.last_solver_stats)})
+            diagnostics = {"failure_reasons": [fr.__dict__ for fr in self.last_failure_reasons], "solver_stats": dict(self.last_solver_stats)}
+            if enable_partial_schedule_on_failure and best_partial:
+                diagnostics["partial_assignments"] = dict(best_partial)
+                diagnostics["scheduled_request_ids"] = sorted(best_partial.keys())
+                diagnostics["unscheduled_request_ids"] = sorted([rid for rid in request_by_id.keys() if rid not in best_partial])
+                diagnostics["total_requests"] = len(request_by_id)
+            setattr(err, "diagnostics", diagnostics)
             raise err
         return best
 

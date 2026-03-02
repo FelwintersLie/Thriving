@@ -533,7 +533,7 @@ class SchedulerDesktopApp:
             self._refresh_profile_preview()
 
     def _normalize_app_settings(self, raw: Dict[str, Any] | None) -> Dict[str, Any]:
-        default = {"max_solve_seconds": 10}
+        default = {"max_solve_seconds": 10, "enable_partial_schedule_on_failure": False}
         if not isinstance(raw, dict):
             return default
         try:
@@ -542,7 +542,9 @@ class SchedulerDesktopApp:
             value = 10
         if value < 1:
             value = 10
-        return {"max_solve_seconds": value}
+        partial_raw = raw.get("enable_partial_schedule_on_failure", False)
+        partial_enabled = bool(partial_raw) if isinstance(partial_raw, bool) else str(partial_raw).strip().lower() in {"1", "true", "yes", "on"}
+        return {"max_solve_seconds": value, "enable_partial_schedule_on_failure": partial_enabled}
 
     def _save_app_settings_from_ui(self) -> None:
         value_raw = self.max_solve_seconds_var.get().strip() if hasattr(self, "max_solve_seconds_var") else str(self.app_settings.get("max_solve_seconds", 10))
@@ -553,8 +555,12 @@ class SchedulerDesktopApp:
         if value < 1:
             value = 10
         self.app_settings["max_solve_seconds"] = value
+        partial_enabled = bool(self.enable_partial_schedule_var.get()) if hasattr(self, "enable_partial_schedule_var") else bool(self.app_settings.get("enable_partial_schedule_on_failure", False))
+        self.app_settings["enable_partial_schedule_on_failure"] = partial_enabled
         if hasattr(self, "max_solve_seconds_var"):
             self.max_solve_seconds_var.set(str(value))
+        if hasattr(self, "enable_partial_schedule_var"):
+            self.enable_partial_schedule_var.set(partial_enabled)
         save_app_settings(self.app_settings)
 
     def _update_loaded_artifact_status(self) -> None:
@@ -1613,6 +1619,12 @@ class SchedulerDesktopApp:
         ttk.Entry(solve, textvariable=self.max_solve_seconds_var, width=12).grid(row=1, column=0, padx=2, sticky="w")
         ttk.Label(solve, text="Minimum 1 second. Invalid values reset to 10.", foreground="#495057").grid(row=0, column=1, rowspan=2, padx=(10, 0), sticky="w")
         ttk.Button(solve, text="Apply Solve Settings", command=lambda: self._safe_action(self.apply_solve_settings)).grid(row=1, column=2, padx=6)
+        self.enable_partial_schedule_var = self.tk.BooleanVar(value=bool(self.app_settings.get("enable_partial_schedule_on_failure", False)))
+        ttk.Checkbutton(
+            solve,
+            text="Return Best Partial Schedule if Full Solution Cannot Be Found",
+            variable=self.enable_partial_schedule_var,
+        ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(8, 0))
 
     def _safe_action(self, fn) -> None:
         try:
@@ -2535,7 +2547,8 @@ class SchedulerDesktopApp:
 
     def apply_solve_settings(self) -> None:
         self._save_app_settings_from_ui()
-        self.status_var.set(f"Status: Max solve time set to {self.app_settings.get('max_solve_seconds', 10)}s")
+        partial_text = "ON" if self.app_settings.get("enable_partial_schedule_on_failure", False) else "OFF"
+        self.status_var.set(f"Status: Max solve time set to {self.app_settings.get('max_solve_seconds', 10)}s | Partial-on-failure {partial_text}")
 
     def add_new_provider(self) -> None:
         name = self.provider_new_var.get().strip()
@@ -3341,6 +3354,7 @@ class SchedulerDesktopApp:
         }
         limits = dict(mapping.get(effort, mapping["high"]))
         limits["max_solve_seconds"] = int(self.app_settings.get("max_solve_seconds", 10))
+        limits["enable_partial_schedule_on_failure"] = bool(self.app_settings.get("enable_partial_schedule_on_failure", False))
         return limits
 
     def _build_auto_profile_template(self) -> Dict[str, Any]:
@@ -3611,13 +3625,34 @@ class SchedulerDesktopApp:
 
         if not result.get("ok"):
             reason = self._failure_report_text(result)
+            target = self.auto_report_text if kind == "iop" else self.eval_report_text
+            if bool(result.get("partial")) and bool(self.app_settings.get("enable_partial_schedule_on_failure", False)):
+                profile_template = payload.get("profile_template", {})
+                default_program = payload.get("default_program", "IOP")
+                self._push_manual_undo_snapshot("Load partial generated schedule")
+                self._update_after_auto_generation(profile_template, result, default_program_type=default_program)
+                placed = len(result.get("assignments", {}))
+                total = len(result.get("requests", []))
+                pct = int(round((placed / total) * 100)) if total else 0
+                if "timed out" in reason.lower():
+                    self.status_var.set(f"Status: Timed out at {self.app_settings.get('max_solve_seconds', 10)} seconds — showing best partial schedule ({placed}/{total}, {pct}%).")
+                else:
+                    self.status_var.set(f"Status: Showing best partial schedule ({placed}/{total}, {pct}%).")
+                prefix = f"Partial Schedule — {placed}/{total} Requirements Placed ({pct}%)"
+                unscheduled = result.get("unscheduled_requirements", [])
+                if unscheduled:
+                    lines = [prefix, "", "Unscheduled requirements (most constraining first):"]
+                    for row in unscheduled[:25]:
+                        lines.append(f"- {row.get('requirement_id')} | patient={row.get('patient')} | {row.get('discipline')} {row.get('duration_minutes')}m | day={row.get('day')} | bottleneck={row.get('bottleneck_category') or '(unknown)'}")
+                    reason = prefix + "\n\n" + reason + "\n\n" + "\n".join(lines[2:])
+                self._set_text(target, reason)
+                return
             if "cancelled" in reason.lower():
                 self.status_var.set("Status: Generation cancelled.")
             elif "timed out" in reason.lower():
                 self.status_var.set(f"Status: No solution found within {self.app_settings.get('max_solve_seconds', 10)}s (timed out).")
             else:
                 self.status_var.set("Status: Generation failed")
-            target = self.auto_report_text if kind == "iop" else self.eval_report_text
             self._set_text(target, reason)
             return
 
@@ -3671,8 +3706,11 @@ class SchedulerDesktopApp:
         )
         if not iop_result.get("ok"):
             prefix = "IOP preflight feasibility check failed." if iop_result.get("report", {}).get("preflight") else "Combined generation failed during IOP stage."
+            if bool(iop_result.get("partial")) and bool(self.app_settings.get("enable_partial_schedule_on_failure", False)):
+                self._push_manual_undo_snapshot("Load partial combined schedule (IOP stage)")
+                self._update_after_auto_generation(profile_template, iop_result, default_program_type="IOP")
+                self.status_var.set("Status: Combined generation IOP stage failed — showing best partial schedule")
             self._set_text(self.eval_report_text, self._failure_report_text(iop_result, prefix=prefix))
-            self.status_var.set("Status: Combined generation stopped at IOP preflight")
             return
 
         if not self.eval_conditions:
@@ -3687,8 +3725,17 @@ class SchedulerDesktopApp:
         )
         if not eval_result.get("ok"):
             prefix = "EVAL preflight feasibility check failed." if eval_result.get("report", {}).get("preflight") else "Combined generation failed during EVAL stage."
+            if bool(eval_result.get("partial")) and bool(self.app_settings.get("enable_partial_schedule_on_failure", False)):
+                self._push_manual_undo_snapshot("Load partial combined schedule (EVAL stage)")
+                merged_partial = {
+                    "ok": False,
+                    "partial": True,
+                    "requests": list(iop_result.get("requests", [])) + list(eval_result.get("requests", [])),
+                    "assignments": {**iop_result.get("assignments", {}), **eval_result.get("assignments", {})},
+                }
+                self._update_after_auto_generation(profile_template, merged_partial, default_program_type="IOP")
+                self.status_var.set("Status: Combined generation EVAL stage failed — showing best partial schedule")
             self._set_text(self.eval_report_text, self._failure_report_text(eval_result, prefix=prefix))
-            self.status_var.set("Status: Combined generation stopped at EVAL preflight")
             return
 
         merged_requests = list(iop_result.get("requests", [])) + list(eval_result.get("requests", []))
