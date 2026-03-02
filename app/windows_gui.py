@@ -717,6 +717,10 @@ class SchedulerDesktopApp:
         notebook.add(disciplines_tab, text="Disciplines")
         disciplines_content = getattr(disciplines_tab, "_scroll_content")
 
+        settings_tab = self._make_scrollable_tab(notebook)
+        notebook.add(settings_tab, text="Settings")
+        settings_content = getattr(settings_tab, "_scroll_content")
+
         manual_split = ttk.Panedwindow(manual_content, orient=tk.VERTICAL)
         manual_split.pack(fill=tk.BOTH, expand=True, pady=(0, 8))
 
@@ -788,6 +792,7 @@ class SchedulerDesktopApp:
         self._build_provider_profiles_tab(provider_content)
         self._build_room_rules_tab(room_rules_content)
         self._build_disciplines_tab(disciplines_content)
+        self._build_settings_tab(settings_content)
 
         sizegrip = ttk.Sizegrip(main)
         sizegrip.pack(side=tk.RIGHT, anchor="se", padx=(0, 4), pady=(0, 4))
@@ -1545,14 +1550,6 @@ class SchedulerDesktopApp:
 
         ttk.Button(cal, text="Apply Calendar Settings", command=lambda: self._safe_action(self.apply_calendar_settings)).grid(row=1, column=5, padx=6)
 
-        solve = ttk.Labelframe(parent, text="Schedule Generation", padding=6)
-        solve.pack(fill="x", pady=(0, 6))
-        self.max_solve_seconds_var = self.tk.StringVar(value=str(self.app_settings.get("max_solve_seconds", 10)))
-        ttk.Label(solve, text="Max Solve Time (seconds)").grid(row=0, column=0, sticky="w")
-        ttk.Entry(solve, textvariable=self.max_solve_seconds_var, width=12).grid(row=1, column=0, padx=2, sticky="w")
-        ttk.Label(solve, text="Minimum 1 second. Invalid values reset to 10.", foreground="#495057").grid(row=0, column=1, rowspan=2, padx=(10, 0), sticky="w")
-        ttk.Button(solve, text="Apply Solve Settings", command=lambda: self._safe_action(self.apply_solve_settings)).grid(row=1, column=2, padx=6)
-
         self.provider_selected_var = self.tk.StringVar(value=self.provider_catalog[0] if self.provider_catalog else "")
         self.provider_new_var = self.tk.StringVar()
         self.provider_avail_weekday_var = self.tk.StringVar(value="Monday")
@@ -1606,6 +1603,20 @@ class SchedulerDesktopApp:
         ttk.Button(appt, text="Add Appointment", command=lambda: self._safe_action(self.add_appointment)).grid(row=1, column=9, padx=6)
         ttk.Button(appt, text="Delete Appointment", command=lambda: self._safe_action(self.delete_selected_appointment)).grid(row=1, column=10, padx=6)
         ttk.Button(appt, text="Undo Manual Action", command=lambda: self._safe_action(self.undo_manual_action)).grid(row=1, column=11, padx=6)
+
+    def _build_settings_tab(self, parent) -> None:
+        ttk = self.ttk
+
+        frame = ttk.Frame(parent, padding=8)
+        frame.pack(fill="both", expand=True)
+
+        solve = ttk.Labelframe(frame, text="Schedule Generation", padding=6)
+        solve.pack(fill="x")
+        self.max_solve_seconds_var = self.tk.StringVar(value=str(self.app_settings.get("max_solve_seconds", 10)))
+        ttk.Label(solve, text="Max Solve Time (seconds)").grid(row=0, column=0, sticky="w")
+        ttk.Entry(solve, textvariable=self.max_solve_seconds_var, width=12).grid(row=1, column=0, padx=2, sticky="w")
+        ttk.Label(solve, text="Minimum 1 second. Invalid values reset to 10.", foreground="#495057").grid(row=0, column=1, rowspan=2, padx=(10, 0), sticky="w")
+        ttk.Button(solve, text="Apply Solve Settings", command=lambda: self._safe_action(self.apply_solve_settings)).grid(row=1, column=2, padx=6)
 
     def _safe_action(self, fn) -> None:
         try:
