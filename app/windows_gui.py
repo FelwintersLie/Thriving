@@ -3274,10 +3274,10 @@ class SchedulerDesktopApp:
     def _solver_limits_from_ui(self) -> Dict[str, int]:
         effort = self.auto_solver_effort_var.get().strip().lower()
         mapping = {
-            "standard": {"max_backtrack_states": 250000, "max_candidates_per_request": 5000},
-            "high": {"max_backtrack_states": 750000, "max_candidates_per_request": 10000},
-            "very high": {"max_backtrack_states": 1500000, "max_candidates_per_request": 20000},
-            "maximum": {"max_backtrack_states": 3000000, "max_candidates_per_request": 30000},
+            "standard": {"max_backtrack_states": 250000, "max_candidates_per_request": 5000, "max_solve_seconds": 10},
+            "high": {"max_backtrack_states": 750000, "max_candidates_per_request": 10000, "max_solve_seconds": 10},
+            "very high": {"max_backtrack_states": 1500000, "max_candidates_per_request": 20000, "max_solve_seconds": 10},
+            "maximum": {"max_backtrack_states": 3000000, "max_candidates_per_request": 30000, "max_solve_seconds": 10},
         }
         return mapping.get(effort, mapping["high"])
 

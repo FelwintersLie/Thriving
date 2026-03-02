@@ -274,6 +274,7 @@ def _solve_multiday(
             "locked_request_ids": sorted(rid for rid in locked_request_ids if rid in daily_previous),
             "max_backtrack_states": solver_limits.get("max_backtrack_states"),
             "max_candidates_per_request": solver_limits.get("max_candidates_per_request"),
+            "max_solve_seconds": solver_limits.get("max_solve_seconds", 10),
         }
 
         try:

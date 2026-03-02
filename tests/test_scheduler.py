@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from app.scheduler import (
     Mode,
@@ -333,6 +334,35 @@ class SchedulerTests(unittest.TestCase):
                 rooms=rooms,
                 day_window=TimeWindow(8 * 60, 9 * 60),
             )
+
+    def test_timeout_aborts_with_clear_message(self):
+        providers, patients, rooms = self._core_inputs()
+        requests = [
+            SessionRequest("r1", ("a",), "pt", 30, Mode.INDIVIDUAL, self.date_key),
+            SessionRequest("r2", ("b",), "pt", 30, Mode.INDIVIDUAL, self.date_key),
+            SessionRequest("r3", ("c",), "pt", 30, Mode.INDIVIDUAL, self.date_key),
+        ]
+
+        tick = {"n": -1}
+
+        def fake_perf_counter():
+            tick["n"] += 1
+            return tick["n"] * 0.02
+
+        with patch("app.scheduler.time.perf_counter", side_effect=fake_perf_counter):
+            with self.assertRaises(Exception) as ctx:
+                self.engine.generate_schedule(
+                    date_key=self.date_key,
+                    weekday=self.weekday,
+                    requests=requests,
+                    providers=providers,
+                    patients=patients,
+                    rooms=rooms,
+                    day_window=TimeWindow(8 * 60, 12 * 60),
+                    max_solve_seconds=0.03,
+                )
+        self.assertIn("timed out", str(ctx.exception))
+        self.assertIn("attempts=", str(ctx.exception))
 
 
 if __name__ == "__main__":

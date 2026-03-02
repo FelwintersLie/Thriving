@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -15,6 +16,7 @@ MAX_CANDIDATES_PER_REQUEST = 5000
 MAX_BACKTRACK_STATES = 250000
 MAX_CANDIDATES_PER_REQUEST_HARD_CAP = 50000
 MAX_BACKTRACK_STATES_HARD_CAP = 5000000
+MAX_SOLVE_SECONDS = 10.0
 
 
 class Mode(str, Enum):
@@ -150,6 +152,10 @@ class UnschedulableError(RuntimeError):
     pass
 
 
+class SolveTimeoutError(UnschedulableError):
+    pass
+
+
 class ScheduleEngine:
     """
     Constraint-based scheduler with composable hard/soft rules and diagnostic logging.
@@ -173,12 +179,17 @@ class ScheduleEngine:
         locked_request_ids: Optional[set[str]] = None,
         max_backtrack_states: Optional[int] = None,
         max_candidates_per_request: Optional[int] = None,
+        max_solve_seconds: Optional[float] = None,
     ) -> Dict[str, Assignment]:
         previous_assignments = previous_assignments or {}
         locked_request_ids = locked_request_ids or set()
         candidate_limit = max_candidates_per_request or MAX_CANDIDATES_PER_REQUEST
         candidate_limit = max(100, min(int(candidate_limit), MAX_CANDIDATES_PER_REQUEST_HARD_CAP))
         self.last_diagnostics = []
+        solve_timeout_seconds = float(max_solve_seconds if max_solve_seconds is not None else MAX_SOLVE_SECONDS)
+        if solve_timeout_seconds <= 0:
+            solve_timeout_seconds = MAX_SOLVE_SECONDS
+        start_perf = time.perf_counter()
 
         self._validate_input_sizes(requests=requests, providers=providers, patients=patients, rooms=rooms, day_window=day_window)
 
@@ -200,6 +211,8 @@ class ScheduleEngine:
             previous_assignments=previous_assignments,
             locked_request_ids=locked_request_ids,
             candidate_limit=candidate_limit,
+            solve_start_perf=start_perf,
+            solve_timeout_seconds=solve_timeout_seconds,
         )
         solution = self._solve_with_constraints(
             requests=requests,
@@ -211,6 +224,8 @@ class ScheduleEngine:
             date_key=date_key,
             weekday=weekday,
             day_window=day_window,
+            solve_start_perf=start_perf,
+            solve_timeout_seconds=solve_timeout_seconds,
         )
         return solution
 
@@ -227,11 +242,20 @@ class ScheduleEngine:
         previous_assignments: Dict[str, Assignment],
         locked_request_ids: set[str],
         candidate_limit: int,
+        solve_start_perf: float,
+        solve_timeout_seconds: float,
     ) -> Dict[str, List[Assignment]]:
         patient_by_id = {p.id: p for p in patients}
         candidates: Dict[str, List[Assignment]] = {}
+        attempts = 0
 
         for req in requests:
+            elapsed = time.perf_counter() - solve_start_perf
+            if elapsed > solve_timeout_seconds:
+                raise SolveTimeoutError(
+                    f"No solution found within {solve_timeout_seconds:g}s (timed out). "
+                    f"Tried candidate generation for {len(candidates)} request(s) in {elapsed:.2f}s."
+                )
             if req.mode == Mode.GROUP and req.group_key is None:
                 raise ValueError(f"Group request {req.id} needs group_key")
             if req.duration_minutes % SLOT_MINUTES != 0:
@@ -253,6 +277,12 @@ class ScheduleEngine:
             options: List[Assignment] = []
             provider_pool: List[Optional[Provider]] = [None] if req.provider_id == "NO_PROVIDER" else list(providers)
             for provider in provider_pool:
+                attempts += 1
+                if time.perf_counter() - solve_start_perf > solve_timeout_seconds:
+                    raise SolveTimeoutError(
+                        f"No solution found within {solve_timeout_seconds:g}s (timed out). "
+                        f"Try relaxing constraints. elapsed={time.perf_counter() - solve_start_perf:.2f}s attempts={attempts}"
+                    )
                 if provider is not None:
                     if req.discipline not in provider.disciplines:
                         rejection_counts["provider_discipline"] += 1
@@ -323,6 +353,8 @@ class ScheduleEngine:
         date_key: str,
         weekday: int,
         day_window: TimeWindow,
+        solve_start_perf: float,
+        solve_timeout_seconds: float,
     ) -> Dict[str, Assignment]:
         backtrack_limit = max_backtrack_states or MAX_BACKTRACK_STATES
         backtrack_limit = max(1000, min(int(backtrack_limit), MAX_BACKTRACK_STATES_HARD_CAP))
@@ -372,6 +404,7 @@ class ScheduleEngine:
         best_score: Optional[int] = None
         states = 0
         conflict_logs = 0
+        most_constrained = sorted_ids[0] if sorted_ids else "(none)"
 
         provider_by_id = {p.id: p for p in providers}
 
@@ -395,6 +428,12 @@ class ScheduleEngine:
         def dfs(index: int, assigned: Dict[str, Assignment], running_penalty: int) -> None:
             nonlocal best, best_score, states, conflict_logs
             states += 1
+            elapsed = time.perf_counter() - solve_start_perf
+            if elapsed > solve_timeout_seconds:
+                raise SolveTimeoutError(
+                    f"No solution found within {solve_timeout_seconds:g}s (timed out). "
+                    f"Try relaxing constraints. elapsed={elapsed:.2f}s attempts={states} most_constrained={most_constrained}"
+                )
             if states > backtrack_limit:
                 raise UnschedulableError("Search limit reached while scheduling. Narrow windows or increase solver effort.")
             if index == len(sorted_ids):
@@ -411,6 +450,12 @@ class ScheduleEngine:
             rid = sorted_ids[index]
             options = sorted(candidate_map[rid], key=lambda c: soft_score(rid, c))
             for option in options:
+                elapsed = time.perf_counter() - solve_start_perf
+                if elapsed > solve_timeout_seconds:
+                    raise SolveTimeoutError(
+                        f"No solution found within {solve_timeout_seconds:g}s (timed out). "
+                        f"Try relaxing constraints. elapsed={elapsed:.2f}s attempts={states} most_constrained={most_constrained}"
+                    )
                 reason = hard_conflict(rid, option, assigned)
                 if reason:
                     if conflict_logs < 120:
