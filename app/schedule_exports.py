@@ -35,6 +35,22 @@ def _to_ampm(minute: int) -> str:
     hour_12 = hour_24 % 12 or 12
     return f"{hour_12}:{minute_of_hour:02d} {period}"
 
+def _hex_to_rgb(hex_color: str) -> Tuple[int, int, int]:
+    text = str(hex_color or "").strip()
+    if len(text) == 7 and text.startswith("#"):
+        try:
+            return int(text[1:3], 16), int(text[3:5], 16), int(text[5:7], 16)
+        except Exception:
+            return (255, 179, 193)
+    return (255, 179, 193)
+
+
+def _text_color_for_bg(hex_color: str) -> str:
+    r, g, b = _hex_to_rgb(hex_color)
+    luminance = (0.299 * r) + (0.587 * g) + (0.114 * b)
+    return "#ffffff" if luminance < 140 else "#1b263b"
+
+
 
 def build_schedule_layout_model(
     appointments: List[Dict[str, Any]],
@@ -186,6 +202,7 @@ def build_schedule_layout_model(
                     "request_id": appt.get("request_id", ""),
                 }
             )
+            fill_color = discipline_colors.get(appt.get("discipline", ""), "#ffb3c1")
             layout["texts"].append(
                 {
                     "x": (x0 + x1) / 2,
@@ -195,7 +212,7 @@ def build_schedule_layout_model(
                     "x1": x1 - 3,
                     "y1": y1 - 2,
                     "text": f"{appt.get('discipline', '')}\n{appt.get('room', '')}\n{appt.get('provider', '')}\n{appt.get('program_type', 'IOP')}",
-                    "fill": "#1b263b",
+                    "fill": _text_color_for_bg(fill_color),
                     "font_size": 8,
                     "bold": False,
                     "anchor": "center",
