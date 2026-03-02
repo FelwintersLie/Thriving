@@ -292,6 +292,8 @@ class AutoSchedulerTests(unittest.TestCase):
         self.assertIn("provider_candidates", first)
         self.assertIn("room_candidates", first)
         self.assertIn("time_slot_candidates", first)
+        self.assertIn("closest_alternatives", first)
+        self.assertIn("minimal_relaxations", first)
 
 
     def test_partial_schedule_opt_in_only(self):

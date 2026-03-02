@@ -329,6 +329,8 @@ def build_bottleneck_report(failure_reasons: List[Dict[str, Any]], solver_stats:
     top: List[Dict[str, Any]] = []
     for entry in ordered:
         fr = entry["best"]
+        near_miss = list(fr.get("near_miss_alternatives", []) or [])[:3]
+        relax = list(fr.get("relaxation_suggestions", []) or [])[:3]
         top.append({
             "requirement_id": fr.get("stable_requirement_id") or fr.get("requirement_id"),
             "patient_ids": fr.get("patient_ids", []),
@@ -342,6 +344,8 @@ def build_bottleneck_report(failure_reasons: List[Dict[str, Any]], solver_stats:
             "why": fr.get("why", ""),
             "hits": int(entry["hits"]),
             "suggestion": _actionable_suggestion(str(fr.get("reason_category", "ALL_CONFLICTS"))),
+            "closest_alternatives": near_miss,
+            "minimal_relaxations": relax if relax else [_actionable_suggestion(str(fr.get("reason_category", "ALL_CONFLICTS")))],
         })
     return {
         "headline": "No feasible schedule found",
@@ -373,6 +377,8 @@ def _unscheduled_requirement_rows(
             "duration_minutes": int(req.get("duration_minutes", 0) or 0),
             "day": req.get("date_key", ""),
             "bottleneck_category": fr.get("reason_category", ""),
+            "closest_alternatives": list(fr.get("near_miss_alternatives", []) or [])[:3],
+            "minimal_relaxations": list(fr.get("relaxation_suggestions", []) or [])[:3],
             "sort_key": (
                 int(fr.get("provider_candidates", 9999) or 9999)
                 + int(fr.get("room_candidates", 9999) or 9999)
@@ -405,7 +411,24 @@ def format_bottleneck_report_lines(report: Dict[str, Any]) -> List[str]:
             f"   reason={item.get('reason_category')} counts(provider={item.get('provider_candidates')}, room={item.get('room_candidates')}, times={item.get('time_slot_candidates')}) hits={item.get('hits')}"
         )
         lines.append(f"   why: {item.get('why')}")
-        lines.append(f"   suggestion: {item.get('suggestion')}")
+        alts = item.get("closest_alternatives", []) or []
+        if alts:
+            lines.append("   Closest feasible alternatives:")
+            for alt in alts[:3]:
+                start = alt.get("start_minute")
+                end = alt.get("end_minute")
+                time_text = f"{start}-{end}" if start is not None and end is not None else "(time n/a)"
+                provider = alt.get("provider_id") or "(any)"
+                room = alt.get("room_id") or "(any)"
+                reason = ", ".join(alt.get("reasons", []) or ["OTHER_CONFLICT"])
+                lines.append(f"   - {time_text} | Provider: {provider} | Room: {room} | Conflict: {reason}")
+        relax = item.get("minimal_relaxations", []) or []
+        if relax:
+            lines.append("   Minimal relaxations:")
+            for sug in relax[:3]:
+                lines.append(f"   - {sug}")
+        else:
+            lines.append(f"   suggestion: {item.get('suggestion')}")
     return lines
 def _solve_multiday(
     *,

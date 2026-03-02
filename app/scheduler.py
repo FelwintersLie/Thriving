@@ -174,6 +174,8 @@ class FailureReason:
     time_slot_candidates: int
     why: str
     failure_depth: int = 0
+    near_miss_alternatives: List[Dict[str, object]] = field(default_factory=list)
+    relaxation_suggestions: List[str] = field(default_factory=list)
 
 
 class ScheduleEngine:
@@ -317,6 +319,7 @@ class ScheduleEngine:
                 "provider": 0,
             }
             options: List[Assignment] = []
+            near_misses: List[Dict[str, object]] = []
             provider_pool: List[Optional[Provider]] = [None] if req.provider_id == "NO_PROVIDER" else list(providers)
             for provider in provider_pool:
                 attempts += 1
@@ -339,12 +342,15 @@ class ScheduleEngine:
                 if provider is not None:
                     if req.discipline not in provider.disciplines:
                         rejection_counts["provider_discipline"] += 1
+                        near_misses.append({"provider_id": provider.id, "room_id": None, "start_minute": None, "end_minute": None, "reasons": ["PROVIDER_CONSTRAINT"], "violation_count": 1, "time_deviation": 0, "overlap_minutes": 0})
                         continue
                     if req.provider_id and provider.id != req.provider_id:
                         rejection_counts["provider_specific"] += 1
+                        near_misses.append({"provider_id": provider.id, "room_id": None, "start_minute": None, "end_minute": None, "reasons": ["PROVIDER_CONSTRAINT"], "violation_count": 1, "time_deviation": 0, "overlap_minutes": 0})
                         continue
                     if req.provider_ids and provider.id not in req.provider_ids:
                         rejection_counts["provider_specific"] += 1
+                        near_misses.append({"provider_id": provider.id, "room_id": None, "start_minute": None, "end_minute": None, "reasons": ["PROVIDER_CONSTRAINT"], "violation_count": 1, "time_deviation": 0, "overlap_minutes": 0})
                         continue
 
                 for room in rooms:
@@ -354,6 +360,7 @@ class ScheduleEngine:
                         continue
                     if req.discipline not in room.allowed_disciplines:
                         rejection_counts["room_discipline"] += 1
+                        near_misses.append({"provider_id": provider.id if provider else None, "room_id": room.id, "start_minute": None, "end_minute": None, "reasons": ["MODE_CONSTRAINT"], "violation_count": 1, "time_deviation": 0, "overlap_minutes": 0})
                         continue
                     if len(req.patient_ids) > room.capacity:
                         continue
@@ -364,12 +371,15 @@ class ScheduleEngine:
                             break
                         if provider is not None and not provider.is_available(date_key, weekday, start, end):
                             rejection_counts["provider"] += 1
+                            near_misses.append({"provider_id": provider.id if provider else None, "room_id": room.id, "start_minute": start, "end_minute": end, "reasons": ["PROVIDER_BUSY"], "violation_count": 1, "time_deviation": self._time_deviation(req, start, end), "overlap_minutes": 15})
                             continue
                         if not room.is_available(date_key, weekday, start, end):
                             rejection_counts["room_rules"] += 1
+                            near_misses.append({"provider_id": provider.id if provider else None, "room_id": room.id, "start_minute": start, "end_minute": end, "reasons": ["ROOM_RULE_VIOLATION"], "violation_count": 1, "time_deviation": self._time_deviation(req, start, end), "overlap_minutes": 15})
                             continue
                         if not all(patient_by_id[p].is_available(date_key, start, end) for p in req.patient_ids):
                             rejection_counts["patient"] += 1
+                            near_misses.append({"provider_id": provider.id if provider else None, "room_id": room.id, "start_minute": start, "end_minute": end, "reasons": ["TIME_WINDOW_VIOLATION"], "violation_count": 1, "time_deviation": self._time_deviation(req, start, end), "overlap_minutes": 15})
                             continue
                         options.append(
                             Assignment(
@@ -421,6 +431,8 @@ class ScheduleEngine:
                     time_slot_candidates=0,
                     why=why,
                     failure_depth=0,
+                    near_miss_alternatives=self._rank_near_misses(near_misses, limit=10),
+                    relaxation_suggestions=self._relaxation_suggestions(reason_category),
                 ))
                 self.last_solver_stats["zero_option_failures"] = self.last_solver_stats.get("zero_option_failures", 0) + 1
                 reason = ", ".join(f"{k}={v}" for k, v in rejection_counts.items() if v > 0)
@@ -590,6 +602,24 @@ class ScheduleEngine:
                 del assigned[rid]
             if not had_non_conflict and options:
                 req = request_by_id[rid]
+                conflict_alts: List[Dict[str, object]] = []
+                for option in options[:20]:
+                    conflict_reason = hard_conflict(rid, option, assigned) or "OTHER_CONFLICT"
+                    mapped = "OTHER_CONFLICT"
+                    if str(conflict_reason).startswith("provider_conflict"):
+                        mapped = "PROVIDER_BUSY"
+                    elif str(conflict_reason).startswith("room_conflict"):
+                        mapped = "ROOM_BUSY"
+                    conflict_alts.append({
+                        "provider_id": option.provider_id,
+                        "room_id": option.room_id,
+                        "start_minute": option.start_minute,
+                        "end_minute": option.end_minute,
+                        "reasons": [mapped],
+                        "violation_count": 1,
+                        "time_deviation": self._time_deviation(req, option.start_minute, option.end_minute),
+                        "overlap_minutes": 15,
+                    })
                 self.last_failure_reasons.append(FailureReason(
                     requirement_id=rid,
                     stable_requirement_id=rid.split("|")[0],
@@ -603,6 +633,8 @@ class ScheduleEngine:
                     time_slot_candidates=max(min_conflict_times, 0),
                     why="Candidates exist but all conflict with already placed items.",
                     failure_depth=index,
+                    near_miss_alternatives=self._rank_near_misses(conflict_alts, limit=10),
+                    relaxation_suggestions=self._relaxation_suggestions("ALL_CONFLICTS"),
                 ))
             backtracks += 1
 
@@ -626,6 +658,36 @@ class ScheduleEngine:
             setattr(err, "diagnostics", diagnostics)
             raise err
         return best
+
+    def _time_deviation(self, req: SessionRequest, start: int, end: int) -> int:
+        if req.preferred_window is None:
+            return 0
+        if req.preferred_window.contains(start, end):
+            return 0
+        if end <= req.preferred_window.start_minute:
+            return req.preferred_window.start_minute - end
+        if start >= req.preferred_window.end_minute:
+            return start - req.preferred_window.end_minute
+        return 0
+
+    def _rank_near_misses(self, near_misses: List[Dict[str, object]], limit: int = 10) -> List[Dict[str, object]]:
+        return sorted(
+            near_misses,
+            key=lambda x: (
+                int(x.get("violation_count", 9)),
+                int(x.get("time_deviation", 9999)),
+                int(x.get("overlap_minutes", 9999)),
+            ),
+        )[:limit]
+
+    def _relaxation_suggestions(self, category: str) -> List[str]:
+        if category == "NO_PROVIDER":
+            return ["Allow any provider instead of fixed provider.", "Add eligible provider for this discipline."]
+        if category == "NO_ROOM":
+            return ["Allow an additional compatible room.", "Relax room restriction for this requirement."]
+        if category == "NO_TIME_SLOTS":
+            return ["Widen appointment window by 30 minutes.", "Reduce duration by one slot (15 minutes).", "Reduce sessions/week by 1."]
+        return ["Widen appointment window by 30 minutes.", "Allow additional provider or room options."]
 
     def _log_constraint_failure(self, request_id: str, reason: str) -> None:
         message = f"constraint_failure request={request_id} reason={reason}"
