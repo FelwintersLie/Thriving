@@ -1,6 +1,6 @@
 import unittest
 
-from app.auto_scheduler import auto_reconfigure_schedule, explain_infeasibility, generate_three_week_schedule, validate_requirement
+from app.auto_scheduler import auto_reconfigure_schedule, explain_infeasibility, generate_three_week_schedule, preflight_check, validate_requirement
 
 
 class AutoSchedulerTests(unittest.TestCase):
@@ -213,6 +213,61 @@ class AutoSchedulerTests(unittest.TestCase):
         ]
         result = generate_three_week_schedule(profile_template=template, requirements=requirements)
         self.assertFalse(result["ok"])
+
+    def test_preflight_check_detects_missing_provider_capacity(self):
+        template = self._template()
+        requirements = [
+            {
+                "id": "no_provider",
+                "discipline": "Psychiatry",
+                "provider_id": "any",
+                "room_id": "Room 1",
+                "duration_minutes": 60,
+                "session_mode": "individual",
+                "patient_scope": "single",
+                "patient_ids": ["1"],
+                "weekdays": [0],
+                "weeks": [1],
+                "time_windows": [{"start_minute": 480, "end_minute": 840}],
+                "hard_constraint": True,
+                "priority": 100,
+            }
+        ]
+        ok, issues, details = preflight_check(
+            requirements,
+            template["providers"],
+            template["rooms"],
+            rules={},
+            date_range=template["planning_dates"],
+            settings={"day_window": template["day_window"]},
+        )
+        self.assertFalse(ok)
+        self.assertTrue(any("No eligible providers" in issue for issue in issues))
+        self.assertIn("no_provider", details["requirements"])
+
+    def test_generate_three_week_schedule_returns_preflight_report(self):
+        template = self._template()
+        requirements = [
+            {
+                "id": "room_mismatch",
+                "discipline": "Psychiatry",
+                "provider_id": "Daniel Fenton",
+                "room_id": "Room 1",
+                "duration_minutes": 60,
+                "session_mode": "individual",
+                "patient_scope": "single",
+                "patient_ids": ["1"],
+                "weekdays": [0],
+                "weeks": [1],
+                "time_windows": [{"start_minute": 480, "end_minute": 840}],
+                "hard_constraint": True,
+                "priority": 100,
+            }
+        ]
+        result = generate_three_week_schedule(profile_template=template, requirements=requirements)
+        self.assertFalse(result["ok"])
+        self.assertTrue(result.get("report", {}).get("preflight"))
+        self.assertTrue(result.get("report", {}).get("issues"))
 
 
 

@@ -372,6 +372,130 @@ def explain_infeasibility(
     }
 
 
+def _provider_available_minutes(provider: Dict[str, Any], date_key: str) -> int:
+    weekday = date.fromisoformat(date_key).weekday()
+    template_by_weekday = {int(t["weekday"]): t.get("windows", []) for t in provider.get("templates", [])}
+    available_minutes = sum(int(w["end_minute"]) - int(w["start_minute"]) for w in template_by_weekday.get(weekday, []))
+    for ex in provider.get("exceptions", []):
+        if ex.get("date_key") != date_key:
+            continue
+        w = ex.get("window", {})
+        delta = int(w.get("end_minute", 0)) - int(w.get("start_minute", 0))
+        if bool(ex.get("available_override")):
+            available_minutes += max(delta, 0)
+        else:
+            available_minutes -= max(delta, 0)
+    return max(0, available_minutes)
+
+
+def _window_overlap_minutes(w1: Dict[str, int], w2: Dict[str, int]) -> int:
+    start = max(int(w1["start_minute"]), int(w2["start_minute"]))
+    end = min(int(w1["end_minute"]), int(w2["end_minute"]))
+    return max(0, end - start)
+
+
+def preflight_check(
+    requirements: List[Dict[str, Any]],
+    providers: List[Dict[str, Any]],
+    rooms: List[Dict[str, Any]],
+    rules: Dict[str, Any] | None,
+    date_range: List[str],
+    settings: Dict[str, Any] | None,
+) -> Tuple[bool, List[str], Dict[str, Any]]:
+    del rules, settings
+    validated = [validate_requirement(r) for r in requirements]
+    provider_by_id = {str(p.get("id")): p for p in providers}
+    room_by_id = {str(r.get("id")): r for r in rooms}
+    issues: List[str] = []
+    details: Dict[str, Any] = {"requirements": {}, "capacity": {"days": {}}}
+
+    for req in validated:
+        requested_provider_ids = req.get("provider_ids") or ([] if req.get("provider_id") == "any" else [req.get("provider_id")])
+        candidate_providers = [
+            p["id"]
+            for p in providers
+            if req["discipline"] in p.get("disciplines", [])
+            and (not requested_provider_ids or p.get("id") in requested_provider_ids)
+        ]
+        if not candidate_providers:
+            issues.append(f"No eligible providers for discipline '{req['discipline']}' (req_id={req['id']})")
+
+        if req.get("room_id") == "any":
+            candidate_rooms = [
+                r["id"]
+                for r in rooms
+                if not r.get("allowed_disciplines") or req["discipline"] in r.get("allowed_disciplines", [])
+            ]
+        else:
+            room = room_by_id.get(req["room_id"])
+            candidate_rooms = []
+            if room and (not room.get("allowed_disciplines") or req["discipline"] in room.get("allowed_disciplines", [])):
+                candidate_rooms.append(room["id"])
+        if not candidate_rooms:
+            issues.append(f"No eligible rooms for discipline '{req['discipline']}' (req_id={req['id']})")
+
+        candidate_dates = _dates_for_requirement(req, date_range)
+        req_windows = req.get("time_windows", [])
+        feasible_slots = 0
+        for date_key in candidate_dates:
+            provider_day_open = 0
+            for provider_id in candidate_providers:
+                provider = provider_by_id.get(provider_id)
+                if provider is None:
+                    continue
+                weekday = date.fromisoformat(date_key).weekday()
+                template_windows = {
+                    int(t["weekday"]): t.get("windows", []) for t in provider.get("templates", [])
+                }.get(weekday, [])
+                provider_day_open += sum(_window_overlap_minutes(w, req_window) for req_window in req_windows for w in template_windows)
+            if provider_day_open > 0:
+                feasible_slots += provider_day_open // max(req["duration_minutes"], SLOT_MINUTES)
+        if feasible_slots <= 0:
+            issues.append(f"No feasible time slots for requirement (req_id={req['id']})")
+
+        details["requirements"][req["id"]] = {
+            "candidate_provider_count": len(candidate_providers),
+            "candidate_room_count": len(candidate_rooms),
+            "candidate_dates": candidate_dates,
+            "feasible_slot_estimate": feasible_slots,
+        }
+
+    day_demand: Dict[str, Dict[str, int]] = {}
+    day_capacity: Dict[str, Dict[str, int]] = {}
+    for req in validated:
+        candidate_dates = _dates_for_requirement(req, date_range)
+        if not candidate_dates:
+            continue
+        daily_minutes = req["duration_minutes"] * max(1, req.get("sessions_per_week", 1))
+        requested_provider_ids = req.get("provider_ids") or ([] if req.get("provider_id") == "any" else [req.get("provider_id")])
+        bucket = req["discipline"] if not requested_provider_ids else "provider:" + ",".join(sorted(requested_provider_ids))
+        share = max(1, daily_minutes // len(candidate_dates))
+        for d in candidate_dates:
+            day_demand.setdefault(d, {})
+            day_demand[d][bucket] = day_demand[d].get(bucket, 0) + share
+
+    for d in date_range:
+        day_capacity[d] = {}
+        for provider in providers:
+            mins = _provider_available_minutes(provider, d)
+            for discipline in provider.get("disciplines", []):
+                day_capacity[d][discipline] = day_capacity[d].get(discipline, 0) + mins
+            day_capacity[d]["provider:" + provider.get("id", "")] = mins
+
+    for d, demand_by_bucket in sorted(day_demand.items()):
+        for bucket, demand in sorted(demand_by_bucket.items()):
+            if bucket.startswith("provider:") and "," in bucket:
+                provider_ids = [p for p in bucket.removeprefix("provider:").split(",") if p]
+                capacity = sum(day_capacity.get(d, {}).get("provider:" + p, 0) for p in provider_ids)
+            else:
+                capacity = day_capacity.get(d, {}).get(bucket, 0)
+            if demand > capacity and capacity >= 0:
+                issues.append(f"Demand exceeds capacity on {d} for {bucket}: demand={demand}m capacity={capacity}m")
+            details["capacity"]["days"].setdefault(d, {})[bucket] = {"demand": demand, "capacity": capacity}
+
+    return len(issues) == 0, issues, details
+
+
 def generate_three_week_schedule(
     *,
     profile_template: Dict[str, Any],
@@ -384,6 +508,24 @@ def generate_three_week_schedule(
         raise AutoScheduleError(f"Too many requirements ({len(requirements)}), max is {MAX_REQUIREMENTS}")
 
     validated = [validate_requirement(req) for req in requirements]
+    pre_ok, pre_issues, pre_details = preflight_check(
+        validated,
+        profile_template.get("providers", []),
+        profile_template.get("rooms", []),
+        rules={},
+        date_range=profile_template["planning_dates"],
+        settings={"day_window": profile_template.get("day_window", {})},
+    )
+    if not pre_ok:
+        return {
+            "ok": False,
+            "assignments": {},
+            "requests": [],
+            "bottlenecks": [],
+            "report": {"ok": False, "issues": pre_issues, "details": pre_details, "preflight": True},
+            "diff": {"unchanged": 0, "moved": 0, "added": 0, "removed": 0, "by_date": {}},
+        }
+
     patient_ids = [p["id"] for p in profile_template.get("patients", [])]
 
     expanded_requests, source_by_request_id = _build_expanded_requests(
