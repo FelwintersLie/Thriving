@@ -1061,10 +1061,6 @@ class SchedulerDesktopApp:
         ttk.Combobox(cond, textvariable=self.auto_window_start_var, values=time_choices, state="readonly", width=10).grid(row=6, column=0, padx=2)
         ttk.Label(cond, text="Appointment Window End").grid(row=5, column=1, sticky="w", pady=(6, 0))
         ttk.Combobox(cond, textvariable=self.auto_window_end_var, values=time_choices, state="readonly", width=10).grid(row=6, column=1, padx=2)
-        ttk.Button(cond, text="Add Appointment Window", command=lambda: self._safe_action(self.add_requirement_window)).grid(row=6, column=2, padx=6)
-
-        ttk.Label(cond, text="Appointment Windows").grid(row=5, column=3, sticky="w", pady=(6, 0))
-        ttk.Entry(cond, textvariable=self.auto_windows_var, width=36).grid(row=6, column=3, columnspan=2, padx=2, sticky="w")
 
         ttk.Checkbutton(cond, text="Hard constraint", variable=self.auto_hard_var).grid(row=6, column=5, sticky="w")
         ttk.Label(cond, text="Priority").grid(row=5, column=6, sticky="w", pady=(6, 0))
