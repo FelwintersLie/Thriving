@@ -245,6 +245,103 @@ class AutoSchedulerTests(unittest.TestCase):
         self.assertTrue(any("No eligible providers" in issue for issue in issues))
         self.assertIn("no_provider", details["requirements"])
 
+
+    def test_failure_report_includes_ranked_bottlenecks(self):
+        template = self._template()
+        for d in list(template["patients"][0]["availability"].keys()):
+            template["patients"][0]["availability"][d] = [{"start_minute": 480, "end_minute": 540}]
+        requirements = [
+            {
+                "id": "r1",
+                "discipline": "Speech-Language Pathology",
+                "provider_id": "Daniel Fenton",
+                "room_id": "Room 1",
+                "duration_minutes": 60,
+                "session_mode": "individual",
+                "patient_scope": "single",
+                "patient_ids": ["1"],
+                "weekdays": [0],
+                "weeks": [1],
+                "time_windows": [{"start_minute": 480, "end_minute": 540}],
+                "hard_constraint": True,
+                "priority": 100,
+            },
+            {
+                "id": "r2",
+                "discipline": "Speech-Language Pathology",
+                "provider_id": "Daniel Fenton",
+                "room_id": "Room 1",
+                "duration_minutes": 60,
+                "session_mode": "individual",
+                "patient_scope": "single",
+                "patient_ids": ["1"],
+                "weekdays": [0],
+                "weeks": [1],
+                "time_windows": [{"start_minute": 480, "end_minute": 540}],
+                "hard_constraint": True,
+                "priority": 100,
+            },
+        ]
+        result = generate_three_week_schedule(profile_template=template, requirements=requirements)
+        self.assertFalse(result["ok"])
+        report = result.get("report", {}).get("bottleneck_report", {})
+        self.assertEqual("No feasible schedule found", report.get("headline"))
+        self.assertTrue(report.get("top_bottlenecks"))
+        first = report["top_bottlenecks"][0]
+        self.assertIn(first.get("reason_category"), {"ALL_CONFLICTS", "NO_TIME_SLOTS", "NO_PROVIDER", "NO_ROOM"})
+        self.assertIn("provider_candidates", first)
+        self.assertIn("room_candidates", first)
+        self.assertIn("time_slot_candidates", first)
+        self.assertIn("closest_alternatives", first)
+        self.assertIn("minimal_relaxations", first)
+
+
+    def test_partial_schedule_opt_in_only(self):
+        template = self._template()
+        for d in list(template["patients"][0]["availability"].keys()):
+            template["patients"][0]["availability"][d] = [{"start_minute": 480, "end_minute": 540}]
+        requirements = [
+            {
+                "id": "p1",
+                "discipline": "Speech-Language Pathology",
+                "provider_id": "Daniel Fenton",
+                "room_id": "Room 1",
+                "duration_minutes": 60,
+                "session_mode": "individual",
+                "patient_scope": "single",
+                "patient_ids": ["1"],
+                "weekdays": [0],
+                "weeks": [1],
+                "time_windows": [{"start_minute": 480, "end_minute": 540}],
+                "hard_constraint": True,
+                "priority": 100,
+            },
+            {
+                "id": "p2",
+                "discipline": "Speech-Language Pathology",
+                "provider_id": "Daniel Fenton",
+                "room_id": "Room 1",
+                "duration_minutes": 60,
+                "session_mode": "individual",
+                "patient_scope": "single",
+                "patient_ids": ["1"],
+                "weekdays": [0],
+                "weeks": [1],
+                "time_windows": [{"start_minute": 480, "end_minute": 540}],
+                "hard_constraint": True,
+                "priority": 100,
+            },
+        ]
+        off_result = generate_three_week_schedule(profile_template=template, requirements=requirements, solver_limits={"enable_partial_schedule_on_failure": False})
+        self.assertFalse(off_result["ok"])
+        self.assertFalse(off_result.get("partial", False))
+        self.assertEqual({}, off_result.get("assignments", {}))
+
+        on_result = generate_three_week_schedule(profile_template=template, requirements=requirements, solver_limits={"enable_partial_schedule_on_failure": True})
+        self.assertFalse(on_result["ok"])
+        self.assertTrue(on_result.get("partial", False))
+        self.assertGreaterEqual(len(on_result.get("assignments", {})), 1)
+
     def test_generate_three_week_schedule_returns_preflight_report(self):
         template = self._template()
         requirements = [

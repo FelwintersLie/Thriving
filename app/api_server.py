@@ -193,6 +193,7 @@ def handle_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
     max_solve_seconds = payload.get("max_solve_seconds")
     cancel_event = payload.get("_cancel_event")
     progress_callback = payload.get("_progress_callback")
+    enable_partial_schedule_on_failure = bool(payload.get("enable_partial_schedule_on_failure", False))
 
     generated = engine.generate_schedule(
         date_key=date_key,
@@ -209,6 +210,7 @@ def handle_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         max_solve_seconds=float(max_solve_seconds) if max_solve_seconds is not None else None,
         cancel_event=cancel_event,
         progress_callback=progress_callback,
+        enable_partial_schedule_on_failure=enable_partial_schedule_on_failure,
     )
 
     timeline = build_room_timeline(rooms=rooms, assignments=generated, day_window=day_window)
@@ -216,6 +218,10 @@ def handle_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "assignments": {req_id: _assignment_to_dict(a, date_key) for req_id, a in generated.items()},
         "room_timeline": timeline,
+        "diagnostics": {
+            "failure_reasons": [fr.__dict__ for fr in getattr(engine, "last_failure_reasons", [])],
+            "solver_stats": dict(getattr(engine, "last_solver_stats", {}) or {}),
+        },
     }
 
 
