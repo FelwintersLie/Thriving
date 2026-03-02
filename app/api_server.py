@@ -216,6 +216,10 @@ def handle_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "assignments": {req_id: _assignment_to_dict(a, date_key) for req_id, a in generated.items()},
         "room_timeline": timeline,
+        "diagnostics": {
+            "failure_reasons": [fr.__dict__ for fr in getattr(engine, "last_failure_reasons", [])],
+            "solver_stats": dict(getattr(engine, "last_solver_stats", {}) or {}),
+        },
     }
 
 

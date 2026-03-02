@@ -245,6 +245,54 @@ class AutoSchedulerTests(unittest.TestCase):
         self.assertTrue(any("No eligible providers" in issue for issue in issues))
         self.assertIn("no_provider", details["requirements"])
 
+
+    def test_failure_report_includes_ranked_bottlenecks(self):
+        template = self._template()
+        for d in list(template["patients"][0]["availability"].keys()):
+            template["patients"][0]["availability"][d] = [{"start_minute": 480, "end_minute": 540}]
+        requirements = [
+            {
+                "id": "r1",
+                "discipline": "Speech-Language Pathology",
+                "provider_id": "Daniel Fenton",
+                "room_id": "Room 1",
+                "duration_minutes": 60,
+                "session_mode": "individual",
+                "patient_scope": "single",
+                "patient_ids": ["1"],
+                "weekdays": [0],
+                "weeks": [1],
+                "time_windows": [{"start_minute": 480, "end_minute": 540}],
+                "hard_constraint": True,
+                "priority": 100,
+            },
+            {
+                "id": "r2",
+                "discipline": "Speech-Language Pathology",
+                "provider_id": "Daniel Fenton",
+                "room_id": "Room 1",
+                "duration_minutes": 60,
+                "session_mode": "individual",
+                "patient_scope": "single",
+                "patient_ids": ["1"],
+                "weekdays": [0],
+                "weeks": [1],
+                "time_windows": [{"start_minute": 480, "end_minute": 540}],
+                "hard_constraint": True,
+                "priority": 100,
+            },
+        ]
+        result = generate_three_week_schedule(profile_template=template, requirements=requirements)
+        self.assertFalse(result["ok"])
+        report = result.get("report", {}).get("bottleneck_report", {})
+        self.assertEqual("No feasible schedule found", report.get("headline"))
+        self.assertTrue(report.get("top_bottlenecks"))
+        first = report["top_bottlenecks"][0]
+        self.assertIn(first.get("reason_category"), {"ALL_CONFLICTS", "NO_TIME_SLOTS", "NO_PROVIDER", "NO_ROOM"})
+        self.assertIn("provider_candidates", first)
+        self.assertIn("room_candidates", first)
+        self.assertIn("time_slot_candidates", first)
+
     def test_generate_three_week_schedule_returns_preflight_report(self):
         template = self._template()
         requirements = [

@@ -3600,6 +3600,13 @@ class SchedulerDesktopApp:
             self._set_generation_controls(False, "")
             self.generation_running_kind = None
 
+    def _failure_report_text(self, result: Dict[str, Any], prefix: str | None = None) -> str:
+        report = result.get("report", {}) if isinstance(result, dict) else {}
+        lines = report.get("bottleneck_lines") or []
+        issues = report.get("issues", [])
+        body = "\n".join(lines) if lines else "\n".join(issues[:5] or ["No detailed bottlenecks available."])
+        return f"{prefix}\n{body}" if prefix else body
+
     def _finish_generation(self, payload: Dict[str, Any]) -> None:
         kind = payload.get("kind")
         result = payload.get("result", {})
@@ -3607,8 +3614,7 @@ class SchedulerDesktopApp:
         self.generation_running_kind = None
 
         if not result.get("ok"):
-            issues = result.get("report", {}).get("issues", [])
-            reason = "\n".join(issues[:5] or ["No detailed bottlenecks available."])
+            reason = self._failure_report_text(result)
             if "cancelled" in reason.lower():
                 self.status_var.set("Status: Generation cancelled.")
             elif "timed out" in reason.lower():
@@ -3668,9 +3674,8 @@ class SchedulerDesktopApp:
             locked_request_ids=soft_locked_ids,
         )
         if not iop_result.get("ok"):
-            issues = iop_result.get("report", {}).get("issues", [])
             prefix = "IOP preflight feasibility check failed." if iop_result.get("report", {}).get("preflight") else "Combined generation failed during IOP stage."
-            self._set_text(self.eval_report_text, prefix + "\n" + "\n".join(issues[:5] or ["No detailed bottlenecks available."]))
+            self._set_text(self.eval_report_text, self._failure_report_text(iop_result, prefix=prefix))
             self.status_var.set("Status: Combined generation stopped at IOP preflight")
             return
 
@@ -3685,9 +3690,8 @@ class SchedulerDesktopApp:
             locked_request_ids=soft_locked_ids,
         )
         if not eval_result.get("ok"):
-            issues = eval_result.get("report", {}).get("issues", [])
             prefix = "EVAL preflight feasibility check failed." if eval_result.get("report", {}).get("preflight") else "Combined generation failed during EVAL stage."
-            self._set_text(self.eval_report_text, prefix + "\n" + "\n".join(issues[:5] or ["No detailed bottlenecks available."]))
+            self._set_text(self.eval_report_text, self._failure_report_text(eval_result, prefix=prefix))
             self.status_var.set("Status: Combined generation stopped at EVAL preflight")
             return
 
