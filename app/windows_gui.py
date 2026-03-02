@@ -20,6 +20,7 @@ from app.health_check import run_health_check
 from app.persistence import (
     load_last_generated_schedule,
     load_last_profile,
+    load_app_settings,
     load_provider_catalog_entries,
     load_provider_profiles,
     load_requirements_catalog,
@@ -27,6 +28,7 @@ from app.persistence import (
     load_room_rules,
     save_last_generated_schedule,
     save_last_profile,
+    save_app_settings,
     save_last_schedule,
     save_provider_catalog_entries,
     save_provider_profiles,
@@ -447,6 +449,7 @@ class SchedulerDesktopApp:
         self.root = tk.Tk()
         self.root.title("Therapy Scheduler - Visual Planner")
         self.root.geometry("1380x900")
+        self.app_settings = self._normalize_app_settings(load_app_settings())
 
         saved_profiles_payload = load_provider_profiles().get("providers", [])
         provider_seed = saved_profiles_payload if saved_profiles_payload else load_provider_catalog_entries(DEFAULT_PROVIDER_NAMES)
@@ -521,6 +524,31 @@ class SchedulerDesktopApp:
             self.status_var.set("Status: Restored last profile")
             self.profile_var.set("Profile: restored from data/last_profile.json")
             self._refresh_profile_preview()
+
+    def _normalize_app_settings(self, raw: Dict[str, Any] | None) -> Dict[str, Any]:
+        default = {"max_solve_seconds": 10}
+        if not isinstance(raw, dict):
+            return default
+        try:
+            value = int(raw.get("max_solve_seconds", 10))
+        except Exception:
+            value = 10
+        if value < 1:
+            value = 10
+        return {"max_solve_seconds": value}
+
+    def _save_app_settings_from_ui(self) -> None:
+        value_raw = self.max_solve_seconds_var.get().strip() if hasattr(self, "max_solve_seconds_var") else str(self.app_settings.get("max_solve_seconds", 10))
+        try:
+            value = int(value_raw)
+        except Exception:
+            value = 10
+        if value < 1:
+            value = 10
+        self.app_settings["max_solve_seconds"] = value
+        if hasattr(self, "max_solve_seconds_var"):
+            self.max_solve_seconds_var.set(str(value))
+        save_app_settings(self.app_settings)
 
     def _update_loaded_artifact_status(self) -> None:
         clinic_name = "None Loaded"
@@ -1504,6 +1532,14 @@ class SchedulerDesktopApp:
 
         ttk.Button(cal, text="Apply Calendar Settings", command=lambda: self._safe_action(self.apply_calendar_settings)).grid(row=1, column=5, padx=6)
 
+        solve = ttk.Labelframe(parent, text="Schedule Generation", padding=6)
+        solve.pack(fill="x", pady=(0, 6))
+        self.max_solve_seconds_var = self.tk.StringVar(value=str(self.app_settings.get("max_solve_seconds", 10)))
+        ttk.Label(solve, text="Max Solve Time (seconds)").grid(row=0, column=0, sticky="w")
+        ttk.Entry(solve, textvariable=self.max_solve_seconds_var, width=12).grid(row=1, column=0, padx=2, sticky="w")
+        ttk.Label(solve, text="Minimum 1 second. Invalid values reset to 10.", foreground="#495057").grid(row=0, column=1, rowspan=2, padx=(10, 0), sticky="w")
+        ttk.Button(solve, text="Apply Solve Settings", command=lambda: self._safe_action(self.apply_solve_settings)).grid(row=1, column=2, padx=6)
+
         self.provider_selected_var = self.tk.StringVar(value=self.provider_catalog[0] if self.provider_catalog else "")
         self.provider_new_var = self.tk.StringVar()
         self.provider_avail_weekday_var = self.tk.StringVar(value="Monday")
@@ -2477,6 +2513,10 @@ class SchedulerDesktopApp:
         self.status_var.set("Status: Calendar settings applied")
         self._refresh_profile_preview()
 
+    def apply_solve_settings(self) -> None:
+        self._save_app_settings_from_ui()
+        self.status_var.set(f"Status: Max solve time set to {self.app_settings.get('max_solve_seconds', 10)}s")
+
     def add_new_provider(self) -> None:
         name = self.provider_new_var.get().strip()
         self._push_manual_undo_snapshot("Add provider")
@@ -3274,12 +3314,14 @@ class SchedulerDesktopApp:
     def _solver_limits_from_ui(self) -> Dict[str, int]:
         effort = self.auto_solver_effort_var.get().strip().lower()
         mapping = {
-            "standard": {"max_backtrack_states": 250000, "max_candidates_per_request": 5000, "max_solve_seconds": 10},
-            "high": {"max_backtrack_states": 750000, "max_candidates_per_request": 10000, "max_solve_seconds": 10},
-            "very high": {"max_backtrack_states": 1500000, "max_candidates_per_request": 20000, "max_solve_seconds": 10},
-            "maximum": {"max_backtrack_states": 3000000, "max_candidates_per_request": 30000, "max_solve_seconds": 10},
+            "standard": {"max_backtrack_states": 250000, "max_candidates_per_request": 5000},
+            "high": {"max_backtrack_states": 750000, "max_candidates_per_request": 10000},
+            "very high": {"max_backtrack_states": 1500000, "max_candidates_per_request": 20000},
+            "maximum": {"max_backtrack_states": 3000000, "max_candidates_per_request": 30000},
         }
-        return mapping.get(effort, mapping["high"])
+        limits = dict(mapping.get(effort, mapping["high"]))
+        limits["max_solve_seconds"] = int(self.app_settings.get("max_solve_seconds", 10))
+        return limits
 
     def _build_auto_profile_template(self) -> Dict[str, Any]:
         start = parse_date_parts(self.auto_start_year_var.get(), self.auto_start_month_var.get(), self.auto_start_day_var.get())

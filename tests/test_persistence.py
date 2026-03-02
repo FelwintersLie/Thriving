@@ -7,6 +7,7 @@ from app.persistence import (
     PROVIDER_CATALOG_PATH,
     LAST_GENERATED_SCHEDULE_PATH,
     PROVIDER_PROFILES_PATH,
+    APP_SETTINGS_PATH,
     ROOM_RULES_PATH,
     ROOM_DISCIPLINE_PROFILE_PATH,
     REQUIREMENTS_CATALOG_PATH,
@@ -29,12 +30,14 @@ from app.persistence import (
     save_room_rules,
     load_room_discipline_profile,
     save_room_discipline_profile,
+    load_app_settings,
+    save_app_settings,
 )
 
 
 class PersistenceTests(unittest.TestCase):
     def tearDown(self):
-        for path in [STATE_PATH, LAST_PROFILE_PATH, LAST_SCHEDULE_PATH, PROVIDER_CATALOG_PATH, REQUIREMENTS_CATALOG_PATH, PROVIDER_PROFILES_PATH, LAST_GENERATED_SCHEDULE_PATH, ROOM_RULES_PATH, ROOM_DISCIPLINE_PROFILE_PATH]:
+        for path in [STATE_PATH, LAST_PROFILE_PATH, LAST_SCHEDULE_PATH, PROVIDER_CATALOG_PATH, REQUIREMENTS_CATALOG_PATH, PROVIDER_PROFILES_PATH, LAST_GENERATED_SCHEDULE_PATH, ROOM_RULES_PATH, ROOM_DISCIPLINE_PROFILE_PATH, APP_SETTINGS_PATH]:
             if path.exists():
                 path.unlink()
         data_dir = Path("data")
@@ -132,6 +135,14 @@ class PersistenceTests(unittest.TestCase):
         self.assertIsNotNone(loaded)
         self.assertEqual(loaded["rooms"]["Room 1"]["allowed_disciplines"], ["Physical Therapy"])
         self.assertEqual(loaded["rooms"]["Room 2"]["room_preference_tier"], 1)
+
+    def test_app_settings_roundtrip(self):
+        payload = {"max_solve_seconds": 12}
+        save_app_settings(payload)
+        loaded = load_app_settings()
+        self.assertEqual(loaded.get("max_solve_seconds"), 12)
+        state = load_state()
+        self.assertIn("app_settings_file", state)
 
 
 if __name__ == "__main__":

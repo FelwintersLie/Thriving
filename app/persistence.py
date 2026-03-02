@@ -18,6 +18,7 @@ ROOM_DISCIPLINE_PROFILE_PATH = Path("data") / "room_discipline_profile.json"
 REQUIREMENTS_CATALOG_PATH = Path("data") / "requirements_catalog.json"
 LAST_GENERATED_SCHEDULE_PATH = Path("data") / "last_generated_schedule.json"
 PROVIDER_PROFILES_PATH = Path("data") / "provider_profiles.json"
+APP_SETTINGS_PATH = Path("data") / "app_settings.json"
 
 
 def _read_json(path: Path) -> Dict[str, Any]:
@@ -38,6 +39,20 @@ def load_state() -> Dict[str, Any]:
 
 def save_state(state: Dict[str, Any]) -> Path:
     return _write_json(STATE_PATH, state)
+
+
+def load_app_settings() -> Dict[str, Any]:
+    payload = _read_json(APP_SETTINGS_PATH)
+    return payload if isinstance(payload, dict) else {}
+
+
+def save_app_settings(settings: Dict[str, Any]) -> Path:
+    cleaned = dict(settings) if isinstance(settings, dict) else {}
+    _write_json(APP_SETTINGS_PATH, cleaned)
+    state = load_state()
+    state["app_settings_file"] = str(APP_SETTINGS_PATH)
+    save_state(state)
+    return APP_SETTINGS_PATH
 
 
 def save_last_profile(profile: Dict[str, Any], source_path: str | None = None) -> Path:
