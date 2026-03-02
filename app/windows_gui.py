@@ -154,6 +154,7 @@ GRID_SLOT_MINUTES = 15
 IOP_PATIENT_ID_CHOICES = [f"I{i}" for i in range(1, 31)]
 EVAL_PATIENT_ID_CHOICES = [f"E{i}" for i in range(1, 11)]
 PATIENT_ID_CHOICES = IOP_PATIENT_ID_CHOICES + EVAL_PATIENT_ID_CHOICES
+REQUIREMENTS_TEMPLATE_SCHEMA_VERSION = 1
 
 
 @dataclass
@@ -174,9 +175,9 @@ def summarize_schedule(result: Dict[str, Any]) -> DashboardSummary:
 
 def _safe_tk_import():
     import tkinter as tk
-    from tkinter import filedialog, messagebox, scrolledtext, ttk
+    from tkinter import filedialog, messagebox, scrolledtext, simpledialog, ttk
 
-    return tk, ttk, messagebox, scrolledtext, filedialog
+    return tk, ttk, messagebox, scrolledtext, filedialog, simpledialog
 
 
 def _to_ampm(minute: int) -> str:
@@ -441,12 +442,13 @@ def build_patient_grid_data(
 
 class SchedulerDesktopApp:
     def __init__(self) -> None:
-        tk, ttk, messagebox, scrolledtext, filedialog = _safe_tk_import()
+        tk, ttk, messagebox, scrolledtext, filedialog, simpledialog = _safe_tk_import()
         self.tk = tk
         self.ttk = ttk
         self.messagebox = messagebox
         self.scrolledtext = scrolledtext
         self.filedialog = filedialog
+        self.simpledialog = simpledialog
 
         self.root = tk.Tk()
         self.root.title("Therapy Scheduler - Visual Planner")
@@ -533,7 +535,12 @@ class SchedulerDesktopApp:
             self._refresh_profile_preview()
 
     def _normalize_app_settings(self, raw: Dict[str, Any] | None) -> Dict[str, Any]:
-        default = {"max_solve_seconds": 10, "enable_partial_schedule_on_failure": False}
+        default = {
+            "max_solve_seconds": 10,
+            "enable_partial_schedule_on_failure": False,
+            "default_iop_requirements_template_path": "",
+            "default_eval_requirements_template_path": "",
+        }
         if not isinstance(raw, dict):
             return default
         try:
@@ -544,7 +551,14 @@ class SchedulerDesktopApp:
             value = 10
         partial_raw = raw.get("enable_partial_schedule_on_failure", False)
         partial_enabled = bool(partial_raw) if isinstance(partial_raw, bool) else str(partial_raw).strip().lower() in {"1", "true", "yes", "on"}
-        return {"max_solve_seconds": value, "enable_partial_schedule_on_failure": partial_enabled}
+        iop_default = str(raw.get("default_iop_requirements_template_path", "") or "").strip()
+        eval_default = str(raw.get("default_eval_requirements_template_path", "") or "").strip()
+        return {
+            "max_solve_seconds": value,
+            "enable_partial_schedule_on_failure": partial_enabled,
+            "default_iop_requirements_template_path": iop_default,
+            "default_eval_requirements_template_path": eval_default,
+        }
 
     def _save_app_settings_from_ui(self) -> None:
         value_raw = self.max_solve_seconds_var.get().strip() if hasattr(self, "max_solve_seconds_var") else str(self.app_settings.get("max_solve_seconds", 10))
@@ -557,6 +571,8 @@ class SchedulerDesktopApp:
         self.app_settings["max_solve_seconds"] = value
         partial_enabled = bool(self.enable_partial_schedule_var.get()) if hasattr(self, "enable_partial_schedule_var") else bool(self.app_settings.get("enable_partial_schedule_on_failure", False))
         self.app_settings["enable_partial_schedule_on_failure"] = partial_enabled
+        self.app_settings["default_iop_requirements_template_path"] = self.default_iop_template_path_var.get().strip() if hasattr(self, "default_iop_template_path_var") else str(self.app_settings.get("default_iop_requirements_template_path", ""))
+        self.app_settings["default_eval_requirements_template_path"] = self.default_eval_template_path_var.get().strip() if hasattr(self, "default_eval_template_path_var") else str(self.app_settings.get("default_eval_requirements_template_path", ""))
         if hasattr(self, "max_solve_seconds_var"):
             self.max_solve_seconds_var.set(str(value))
         if hasattr(self, "enable_partial_schedule_var"):
@@ -1158,6 +1174,9 @@ class SchedulerDesktopApp:
         self.auto_cancel_button.pack(side="left", padx=4)
         ttk.Button(action_frame, text="Auto reconfigure existing schedule", command=lambda: self._safe_action(self.auto_reconfigure_existing_schedule)).pack(side="left", padx=4)
         ttk.Button(action_frame, text="Explain bottleneck", command=lambda: self._safe_action(self.explain_auto_bottleneck)).pack(side="left", padx=4)
+        ttk.Button(action_frame, text="Save Requirements Template…", command=lambda: self._safe_action(self.save_iop_requirements_template)).pack(side="left", padx=4)
+        ttk.Button(action_frame, text="Load Requirements Template…", command=lambda: self._safe_action(self.load_iop_requirements_template)).pack(side="left", padx=4)
+        ttk.Button(action_frame, text="Quick Load Default Template", command=lambda: self._safe_action(self.quick_load_default_iop_requirements_template)).pack(side="left", padx=4)
 
         self._refresh_auto_condition_list()
     def _build_eval_generator_tab(self, parent) -> None:
@@ -1310,6 +1329,9 @@ class SchedulerDesktopApp:
         self.eval_cancel_button.pack(side="left", padx=4)
         ttk.Button(actions, text="Generate Combined Schedule", command=lambda: self._safe_action(self.generate_combined_schedule)).pack(side="left", padx=4)
         ttk.Button(actions, text="Import Existing Schedule JSON", command=lambda: self._safe_action(self.import_existing_schedule_json)).pack(side="left", padx=4)
+        ttk.Button(actions, text="Save Requirements Template…", command=lambda: self._safe_action(self.save_eval_requirements_template)).pack(side="left", padx=4)
+        ttk.Button(actions, text="Load Requirements Template…", command=lambda: self._safe_action(self.load_eval_requirements_template)).pack(side="left", padx=4)
+        ttk.Button(actions, text="Quick Load Default Template", command=lambda: self._safe_action(self.quick_load_default_eval_requirements_template)).pack(side="left", padx=4)
 
         report = ttk.Labelframe(parent, text="EVAL / Combined Report", padding=10)
         report.pack(fill="both", expand=True, padx=6, pady=6)
@@ -1625,6 +1647,21 @@ class SchedulerDesktopApp:
             text="Return Best Partial Schedule if Full Solution Cannot Be Found",
             variable=self.enable_partial_schedule_var,
         ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(8, 0))
+
+        templates = ttk.Labelframe(frame, text="Default Requirements Templates", padding=6)
+        templates.pack(fill="x", pady=(8, 0))
+        self.default_iop_template_path_var = self.tk.StringVar(value=str(self.app_settings.get("default_iop_requirements_template_path", "") or ""))
+        self.default_eval_template_path_var = self.tk.StringVar(value=str(self.app_settings.get("default_eval_requirements_template_path", "") or ""))
+        ttk.Label(templates, text="Default IOP template").grid(row=0, column=0, sticky="w")
+        ttk.Entry(templates, textvariable=self.default_iop_template_path_var, width=80).grid(row=1, column=0, padx=(0, 4), sticky="ew")
+        ttk.Button(templates, text="Browse…", command=lambda: self._safe_action(self.browse_default_iop_template_path)).grid(row=1, column=1, padx=2)
+        ttk.Button(templates, text="Clear", command=lambda: self._safe_action(self.clear_default_iop_template_path)).grid(row=1, column=2, padx=2)
+
+        ttk.Label(templates, text="Default EVAL template").grid(row=2, column=0, sticky="w", pady=(8, 0))
+        ttk.Entry(templates, textvariable=self.default_eval_template_path_var, width=80).grid(row=3, column=0, padx=(0, 4), sticky="ew")
+        ttk.Button(templates, text="Browse…", command=lambda: self._safe_action(self.browse_default_eval_template_path)).grid(row=3, column=1, padx=2)
+        ttk.Button(templates, text="Clear", command=lambda: self._safe_action(self.clear_default_eval_template_path)).grid(row=3, column=2, padx=2)
+        templates.columnconfigure(0, weight=1)
 
     def _safe_action(self, fn) -> None:
         try:
@@ -2549,6 +2586,151 @@ class SchedulerDesktopApp:
         self._save_app_settings_from_ui()
         partial_text = "ON" if self.app_settings.get("enable_partial_schedule_on_failure", False) else "OFF"
         self.status_var.set(f"Status: Max solve time set to {self.app_settings.get('max_solve_seconds', 10)}s | Partial-on-failure {partial_text}")
+
+    def _build_requirements_template_payload(self, program_type: str, template_name: str) -> Dict[str, Any]:
+        if program_type == "IOP":
+            requirements = copy.deepcopy(self.auto_conditions)
+            generator_settings = {
+                "patient_count": self.auto_patients_var.get().strip(),
+                "start_year": self.auto_start_year_var.get().strip(),
+                "start_month": self.auto_start_month_var.get().strip(),
+                "start_day": self.auto_start_day_var.get().strip(),
+            }
+        else:
+            requirements = copy.deepcopy(self.eval_conditions)
+            generator_settings = {
+                "cohort_start_year": self.eval_start_year_var.get().strip(),
+                "cohort_start_month": self.eval_start_month_var.get().strip(),
+                "cohort_start_day": self.eval_start_day_var.get().strip(),
+                "cohort_type": self.eval_cohort_var.get().strip(),
+                "eval_patient_count": self.eval_patient_count_var.get().strip(),
+                "group_start": self.eval_group_start_var.get().strip(),
+                "group_duration": self.eval_group_duration_var.get().strip(),
+            }
+        return {
+            "schema_version": REQUIREMENTS_TEMPLATE_SCHEMA_VERSION,
+            "template_id": str(uuid.uuid4()),
+            "template_name": template_name,
+            "program_type": program_type,
+            "saved_at": datetime.utcnow().isoformat() + "Z",
+            "requirements": requirements,
+            "generator_settings": generator_settings,
+        }
+
+    def _validate_requirements_template_payload(self, payload: Dict[str, Any], expected_program_type: str) -> Dict[str, Any]:
+        if not isinstance(payload, dict):
+            raise ValueError("Template file must contain a JSON object")
+        if int(payload.get("schema_version", -1)) != REQUIREMENTS_TEMPLATE_SCHEMA_VERSION:
+            raise ValueError(f"Unsupported template schema_version: {payload.get('schema_version')}")
+        program_type = str(payload.get("program_type", "")).strip().upper()
+        if program_type != expected_program_type:
+            raise ValueError(f"Template program_type '{program_type}' does not match expected '{expected_program_type}'")
+        reqs_raw = payload.get("requirements", [])
+        if not isinstance(reqs_raw, list):
+            raise ValueError("Template requirements must be a list")
+        validated = [validate_requirement(r) for r in reqs_raw if isinstance(r, dict)]
+        return {"requirements": validated, "generator_settings": payload.get("generator_settings", {}) if isinstance(payload.get("generator_settings", {}), dict) else {}}
+
+    def _save_requirements_template(self, program_type: str) -> None:
+        name = self.simpledialog.askstring("Template Name", f"Enter {program_type} template name")
+        if not name:
+            return
+        ext = "*.iop_req_template.json" if program_type == "IOP" else "*.eval_req_template.json"
+        path_raw = self.filedialog.asksaveasfilename(
+            title=f"Save {program_type} Requirements Template",
+            defaultextension=ext.split('*')[-1],
+            filetypes=[(f"{program_type} template", ext), ("JSON files", "*.json")],
+        )
+        if not path_raw:
+            return
+        payload = self._build_requirements_template_payload(program_type, name.strip())
+        Path(path_raw).write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        self.status_var.set(f"Status: Saved {program_type} requirements template")
+
+    def _load_requirements_template(self, program_type: str, path_raw: str | None = None) -> None:
+        ext = "*.iop_req_template.json" if program_type == "IOP" else "*.eval_req_template.json"
+        path = path_raw or self.filedialog.askopenfilename(
+            title=f"Load {program_type} Requirements Template",
+            filetypes=[(f"{program_type} template", ext), ("JSON files", "*.json")],
+        )
+        if not path:
+            return
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+        parsed = self._validate_requirements_template_payload(payload, program_type)
+        if program_type == "IOP":
+            self.auto_conditions = parsed["requirements"]
+            settings = parsed.get("generator_settings", {})
+            self.auto_patients_var.set(str(settings.get("patient_count", self.auto_patients_var.get())))
+            self.auto_start_year_var.set(str(settings.get("start_year", self.auto_start_year_var.get())))
+            self.auto_start_month_var.set(str(settings.get("start_month", self.auto_start_month_var.get())))
+            self.auto_start_day_var.set(str(settings.get("start_day", self.auto_start_day_var.get())))
+            self._refresh_auto_condition_list()
+        else:
+            self.eval_conditions = parsed["requirements"]
+            settings = parsed.get("generator_settings", {})
+            self.eval_start_year_var.set(str(settings.get("cohort_start_year", self.eval_start_year_var.get())))
+            self.eval_start_month_var.set(str(settings.get("cohort_start_month", self.eval_start_month_var.get())))
+            self.eval_start_day_var.set(str(settings.get("cohort_start_day", self.eval_start_day_var.get())))
+            self.eval_cohort_var.set(str(settings.get("cohort_type", self.eval_cohort_var.get())))
+            self.eval_patient_count_var.set(str(settings.get("eval_patient_count", self.eval_patient_count_var.get())))
+            self.eval_group_start_var.set(str(settings.get("group_start", self.eval_group_start_var.get())))
+            self.eval_group_duration_var.set(str(settings.get("group_duration", self.eval_group_duration_var.get())))
+            self._refresh_eval_condition_list()
+            self._refresh_auto_condition_list()
+        self._persist_requirements_catalog()
+        self.status_var.set(f"Status: Loaded {program_type} requirements template")
+
+    def save_iop_requirements_template(self) -> None:
+        self._save_requirements_template("IOP")
+
+    def load_iop_requirements_template(self) -> None:
+        self._load_requirements_template("IOP")
+
+    def save_eval_requirements_template(self) -> None:
+        self._save_requirements_template("EVAL")
+
+    def load_eval_requirements_template(self) -> None:
+        self._load_requirements_template("EVAL")
+
+    def quick_load_default_iop_requirements_template(self) -> None:
+        path = str(self.app_settings.get("default_iop_requirements_template_path", "") or "").strip()
+        if not path or not Path(path).exists():
+            self.status_var.set("Status: Default IOP template path is missing or invalid")
+            return
+        self._load_requirements_template("IOP", path)
+
+    def quick_load_default_eval_requirements_template(self) -> None:
+        path = str(self.app_settings.get("default_eval_requirements_template_path", "") or "").strip()
+        if not path or not Path(path).exists():
+            self.status_var.set("Status: Default EVAL template path is missing or invalid")
+            return
+        self._load_requirements_template("EVAL", path)
+
+    def browse_default_iop_template_path(self) -> None:
+        path = self.filedialog.askopenfilename(title="Select default IOP requirements template", filetypes=[("IOP template", "*.iop_req_template.json"), ("JSON files", "*.json")])
+        if not path:
+            return
+        self.default_iop_template_path_var.set(path)
+        self._save_app_settings_from_ui()
+        self.status_var.set("Status: Default IOP template path saved")
+
+    def clear_default_iop_template_path(self) -> None:
+        self.default_iop_template_path_var.set("")
+        self._save_app_settings_from_ui()
+        self.status_var.set("Status: Cleared default IOP template path")
+
+    def browse_default_eval_template_path(self) -> None:
+        path = self.filedialog.askopenfilename(title="Select default EVAL requirements template", filetypes=[("EVAL template", "*.eval_req_template.json"), ("JSON files", "*.json")])
+        if not path:
+            return
+        self.default_eval_template_path_var.set(path)
+        self._save_app_settings_from_ui()
+        self.status_var.set("Status: Default EVAL template path saved")
+
+    def clear_default_eval_template_path(self) -> None:
+        self.default_eval_template_path_var.set("")
+        self._save_app_settings_from_ui()
+        self.status_var.set("Status: Cleared default EVAL template path")
 
     def add_new_provider(self) -> None:
         name = self.provider_new_var.get().strip()
