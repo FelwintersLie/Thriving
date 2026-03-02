@@ -244,6 +244,8 @@ def _solve_multiday(
     previous_assignments: Dict[str, Dict[str, Any]] | None = None,
     solver_limits: Dict[str, int] | None = None,
     locked_request_ids: List[str] | None = None,
+    cancel_event: Any | None = None,
+    progress_callback: Any | None = None,
 ) -> Tuple[Dict[str, Dict[str, Any]], List[Bottleneck]]:
     assignments: Dict[str, Dict[str, Any]] = {}
     bottlenecks: List[Bottleneck] = []
@@ -275,14 +277,18 @@ def _solve_multiday(
             "max_backtrack_states": solver_limits.get("max_backtrack_states"),
             "max_candidates_per_request": solver_limits.get("max_candidates_per_request"),
             "max_solve_seconds": solver_limits.get("max_solve_seconds", 10),
+            "_cancel_event": cancel_event,
+            "_progress_callback": progress_callback,
         }
 
         try:
             result = handle_generate(payload)
             assignments.update(result.get("assignments", {}))
         except Exception as exc:
-            # collect per-request failure reasons to keep report actionable
             reason = str(exc)
+            if "Generation cancelled" in reason or "timed out" in reason:
+                raise
+            # collect per-request failure reasons to keep report actionable
             for request in daily_requests:
                 bottlenecks.append(Bottleneck(request["id"], date_key, reason))
 
@@ -504,6 +510,8 @@ def generate_three_week_schedule(
     previous_assignments: Dict[str, Dict[str, Any]] | None = None,
     solver_limits: Dict[str, int] | None = None,
     locked_request_ids: List[str] | None = None,
+    cancel_event: Any | None = None,
+    progress_callback: Any | None = None,
 ) -> Dict[str, Any]:
     if len(requirements) > MAX_REQUIREMENTS:
         raise AutoScheduleError(f"Too many requirements ({len(requirements)}), max is {MAX_REQUIREMENTS}")
@@ -536,13 +544,26 @@ def generate_three_week_schedule(
     )
 
     hard_requests = _apply_requirement_filters(expanded_requests, source_by_request_id, hard_only=True)
-    hard_assignments, hard_bottlenecks = _solve_multiday(
-        profile_template=profile_template,
-        requests=hard_requests,
-        previous_assignments=previous_assignments,
-        solver_limits=solver_limits,
-        locked_request_ids=locked_request_ids,
-    )
+    try:
+        hard_assignments, hard_bottlenecks = _solve_multiday(
+            profile_template=profile_template,
+            requests=hard_requests,
+            previous_assignments=previous_assignments,
+            solver_limits=solver_limits,
+            locked_request_ids=locked_request_ids,
+            cancel_event=cancel_event,
+            progress_callback=progress_callback,
+        )
+    except Exception as exc:
+        reason = str(exc)
+        return {
+            "ok": False,
+            "assignments": {},
+            "requests": expanded_requests,
+            "bottlenecks": [],
+            "report": {"ok": False, "issues": [reason], "preflight": False},
+            "diff": {"unchanged": 0, "moved": 0, "added": 0, "removed": 0, "by_date": {}},
+        }
 
     if hard_bottlenecks:
         return {
@@ -564,13 +585,26 @@ def generate_three_week_schedule(
     merged_assignments = dict(hard_assignments)
     soft_bottlenecks: List[Bottleneck] = []
     if soft_requests:
-        soft_assignments, soft_bottlenecks = _solve_multiday(
-            profile_template=profile_template,
-            requests=soft_requests,
-            previous_assignments=previous_assignments,
-            solver_limits=solver_limits,
-            locked_request_ids=locked_request_ids,
-        )
+        try:
+            soft_assignments, soft_bottlenecks = _solve_multiday(
+                profile_template=profile_template,
+                requests=soft_requests,
+                previous_assignments=previous_assignments,
+                solver_limits=solver_limits,
+                locked_request_ids=locked_request_ids,
+                cancel_event=cancel_event,
+                progress_callback=progress_callback,
+            )
+        except Exception as exc:
+            reason = str(exc)
+            return {
+                "ok": False,
+                "assignments": {},
+                "requests": expanded_requests,
+                "bottlenecks": [],
+                "report": {"ok": False, "issues": [reason], "preflight": False},
+                "diff": {"unchanged": 0, "moved": 0, "added": 0, "removed": 0, "by_date": {}},
+            }
         merged_assignments.update(soft_assignments)
 
     diff = diff_assignments(previous_assignments or {}, merged_assignments)

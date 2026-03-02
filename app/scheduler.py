@@ -4,7 +4,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 SLOT_MINUTES = 15
 
@@ -156,6 +156,10 @@ class SolveTimeoutError(UnschedulableError):
     pass
 
 
+class GenerationCancelledError(UnschedulableError):
+    pass
+
+
 class ScheduleEngine:
     """
     Constraint-based scheduler with composable hard/soft rules and diagnostic logging.
@@ -180,6 +184,8 @@ class ScheduleEngine:
         max_backtrack_states: Optional[int] = None,
         max_candidates_per_request: Optional[int] = None,
         max_solve_seconds: Optional[float] = None,
+        cancel_event: Optional[object] = None,
+        progress_callback: Optional[Callable[[Dict[str, object]], None]] = None,
     ) -> Dict[str, Assignment]:
         previous_assignments = previous_assignments or {}
         locked_request_ids = locked_request_ids or set()
@@ -213,6 +219,8 @@ class ScheduleEngine:
             candidate_limit=candidate_limit,
             solve_start_perf=start_perf,
             solve_timeout_seconds=solve_timeout_seconds,
+            cancel_event=cancel_event,
+            progress_callback=progress_callback,
         )
         solution = self._solve_with_constraints(
             requests=requests,
@@ -226,6 +234,8 @@ class ScheduleEngine:
             day_window=day_window,
             solve_start_perf=start_perf,
             solve_timeout_seconds=solve_timeout_seconds,
+            cancel_event=cancel_event,
+            progress_callback=progress_callback,
         )
         return solution
 
@@ -244,12 +254,16 @@ class ScheduleEngine:
         candidate_limit: int,
         solve_start_perf: float,
         solve_timeout_seconds: float,
+        cancel_event: Optional[object],
+        progress_callback: Optional[Callable[[Dict[str, object]], None]],
     ) -> Dict[str, List[Assignment]]:
         patient_by_id = {p.id: p for p in patients}
         candidates: Dict[str, List[Assignment]] = {}
         attempts = 0
 
         for req in requests:
+            if cancel_event is not None and hasattr(cancel_event, "is_set") and cancel_event.is_set():
+                raise GenerationCancelledError("Generation cancelled.")
             elapsed = time.perf_counter() - solve_start_perf
             if elapsed > solve_timeout_seconds:
                 raise SolveTimeoutError(
@@ -278,11 +292,22 @@ class ScheduleEngine:
             provider_pool: List[Optional[Provider]] = [None] if req.provider_id == "NO_PROVIDER" else list(providers)
             for provider in provider_pool:
                 attempts += 1
+                if cancel_event is not None and hasattr(cancel_event, "is_set") and cancel_event.is_set():
+                    raise GenerationCancelledError("Generation cancelled.")
                 if time.perf_counter() - solve_start_perf > solve_timeout_seconds:
                     raise SolveTimeoutError(
                         f"No solution found within {solve_timeout_seconds:g}s (timed out). "
                         f"Try relaxing constraints. elapsed={time.perf_counter() - solve_start_perf:.2f}s attempts={attempts}"
                     )
+                if progress_callback and attempts % 250 == 0:
+                    progress_callback({
+                        "stage": "candidate_generation",
+                        "elapsed": time.perf_counter() - solve_start_perf,
+                        "attempts": attempts,
+                        "request_id": req.id,
+                        "discipline": req.discipline,
+                        "patients": list(req.patient_ids),
+                    })
                 if provider is not None:
                     if req.discipline not in provider.disciplines:
                         rejection_counts["provider_discipline"] += 1
@@ -355,6 +380,8 @@ class ScheduleEngine:
         day_window: TimeWindow,
         solve_start_perf: float,
         solve_timeout_seconds: float,
+        cancel_event: Optional[object],
+        progress_callback: Optional[Callable[[Dict[str, object]], None]],
     ) -> Dict[str, Assignment]:
         backtrack_limit = max_backtrack_states or MAX_BACKTRACK_STATES
         backtrack_limit = max(1000, min(int(backtrack_limit), MAX_BACKTRACK_STATES_HARD_CAP))
@@ -428,6 +455,8 @@ class ScheduleEngine:
         def dfs(index: int, assigned: Dict[str, Assignment], running_penalty: int) -> None:
             nonlocal best, best_score, states, conflict_logs
             states += 1
+            if cancel_event is not None and hasattr(cancel_event, "is_set") and cancel_event.is_set():
+                raise GenerationCancelledError("Generation cancelled.")
             elapsed = time.perf_counter() - solve_start_perf
             if elapsed > solve_timeout_seconds:
                 raise SolveTimeoutError(
@@ -448,8 +477,20 @@ class ScheduleEngine:
                 return
 
             rid = sorted_ids[index]
+            if progress_callback and states % 250 == 0:
+                req = request_by_id[rid]
+                progress_callback({
+                    "stage": "search",
+                    "elapsed": elapsed,
+                    "attempts": states,
+                    "request_id": rid,
+                    "discipline": req.discipline,
+                    "patients": list(req.patient_ids),
+                })
             options = sorted(candidate_map[rid], key=lambda c: soft_score(rid, c))
             for option in options:
+                if cancel_event is not None and hasattr(cancel_event, "is_set") and cancel_event.is_set():
+                    raise GenerationCancelledError("Generation cancelled.")
                 elapsed = time.perf_counter() - solve_start_perf
                 if elapsed > solve_timeout_seconds:
                     raise SolveTimeoutError(

@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import patch
 
 from app.scheduler import (
+    GenerationCancelledError,
     Mode,
     Patient,
     Provider,
@@ -363,6 +364,22 @@ class SchedulerTests(unittest.TestCase):
                 )
         self.assertIn("timed out", str(ctx.exception))
         self.assertIn("attempts=", str(ctx.exception))
+
+    def test_cancel_event_aborts_generation(self):
+        providers, patients, rooms = self._core_inputs()
+        requests = [SessionRequest("r1", ("a",), "pt", 30, Mode.INDIVIDUAL, self.date_key)]
+        cancel_event = type("CancelToken", (), {"is_set": lambda self: True})()
+        with self.assertRaises(GenerationCancelledError):
+            self.engine.generate_schedule(
+                date_key=self.date_key,
+                weekday=self.weekday,
+                requests=requests,
+                providers=providers,
+                patients=patients,
+                rooms=rooms,
+                day_window=TimeWindow(8 * 60, 12 * 60),
+                cancel_event=cancel_event,
+            )
 
 
 if __name__ == "__main__":
